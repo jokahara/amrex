@@ -87,29 +87,14 @@ public:
     void FillBoundary_nowait (int scomp, int ncomp, const Periodicity& period, bool cross = false);
     void FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost, const Periodicity& period, bool cross = false);
     void FillBoundary_finish ();
-    
-    // Replaces FBEP_nowait
-    void UpdateRemotes(int scomp, int ncomp, const IntVect& nghost,
-                      const Periodicity& period, bool cross,
-                      bool enforce_periodicity_only=false); 
-
-    // TODO:
-    /*void FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
-                      const Periodicity& period, bool cross,
-                      bool enforce_periodicity_only);*/
 
     #ifdef BL_USE_MPI
     //! Prepost nonblocking receives
-    void PostRcvs (const MapOfCopyComTagContainers&       m_RcvTags,
-                   /*char*&                                 the_recv_data,
-                   Vector<char*>&                         recv_data,
-                   Vector<std::size_t>&                   recv_size,*/
-                   Vector<int>&                           recv_from,
-                   Vector<MPI_Request>&                   recv_reqs,
-                   int                                    icomp,
-                   int                                    ncomp,
-                   int                                    SeqNum);
+    void PostRecvs (const MapOfCopyComTagContainers& m_RcvTags,
+                    int icomp, int ncomp, int SeqNum);
     
+    void PostSends (const MapOfCopyComTagContainers& m_SndTags,
+                    int icomp, int ncomp, int SeqNum);
     #endif
     
     void FB_local_copy_cpu (const FB& TheFB, int scomp, int ncomp);
@@ -205,23 +190,16 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, bool cross)
 inline void
 CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const Periodicity& period, bool cross)
 {
-    BL_PROFILE("FillBoundary_nowait()");
-    UpdateRemotes(scomp, ncomp, nGrowVect(), period, cross);
+    FillBoundary_nowait(scomp, ncomp, nGrowVect(), period, cross);
 }
 
-inline void
+void
 CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
-                                    const Periodicity& period, bool cross)
+                                    const Periodicity& period, bool cross 
+                                    /*,bool enforce_periodicity_only*/)
 {
-    BL_PROFILE("FillBoundary_nowait()");
-    UpdateRemotes(scomp, ncomp, nghost, period, cross);
-}
+    bool enforce_periodicity_only = false;
 
-void 
-CellFabArray::UpdateRemotes(int scomp, int ncomp, const IntVect& nghost,
-                            const Periodicity& period, bool cross,
-                            bool enforce_periodicity_only) 
-{
     fb_cross = cross;
     fb_epo   = enforce_periodicity_only;
     fb_scomp = scomp;
@@ -289,150 +267,23 @@ CellFabArray::UpdateRemotes(int scomp, int ncomp, const IntVect& nghost,
         // No work to do.
         return;
 
-    //
-    // Post rcvs. Allocate one chunk of space to hold'm all.
-    //
-    //fb_the_recv_data = nullptr;
-
+    // Post receives
     if (N_rcvs > 0) {
-        PostRcvs(*TheFB.m_RcvTags, //fb_the_recv_data,
-                 /*fb_recv_data, fb_recv_size,*/ 
-                 fb_recv_from, fb_recv_reqs,
-                 scomp, ncomp, SeqNum);
+        PostRecvs(*TheFB.m_RcvTags,
+                    scomp, ncomp, SeqNum);
         fb_recv_stat.resize(N_rcvs);
     }
-    //PostSends() {
-    //
-    // Post send's
-    // std::tuple<void*, int, MPI_Datatype> get_mpi_datatype()
-    /*char*&                          the_send_data = fb_the_send_data;
-    Vector<char*>                       send_data;                      // addresses
-    Vector<int>                         send_size;                      // counts
-    Vector<MPI_Datatype>                send_type;                      // datatypes*/
-    Vector<int>                         send_rank;
-    Vector<MPI_Request>&                send_reqs = fb_send_reqs;
-    Vector<const CopyComTagsContainer*> send_cctc;
-    
+
+    // Post sends
     if (N_snds > 0)
     {
-        fb_send_reqs.clear();
-
-        send_rank.reserve(N_snds);
-        send_reqs.reserve(N_snds);
-        send_cctc.reserve(N_snds);  
-
-        //Vector<std::size_t> offset; offset.reserve(N_snds);
-        //std::size_t total_volume = 0;
-        for (auto const& kv : *TheFB.m_SndTags)
-        {
-            send_rank.push_back(kv.first);
-            send_reqs.push_back(MPI_REQUEST_NULL);
-            send_cctc.push_back(&kv.second);
-        }
-/*
-#ifdef AMREX_USE_GPU
-        if (Gpu::inLaunchRegion())
-        {
-#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10))
-            if (Gpu::inGraphRegion()) {
-                FB_pack_send_buffer_cuda_graph(TheFB, scomp, ncomp, send_data, send_size, send_cctc);
-            }
-            else
-#endif
-            {
-                pack_send_buffer_gpu(*this, scomp, ncomp, send_data, send_size, send_cctc);
-            }
-        }
-        else
-#endif*/
-
-        // pack_send_buffer_cpu(*this, scomp, ncomp, send_data, send_size, send_cctc);
-
-        MPI_Comm comm = ParallelContext::CommunicatorSub();
-        // Get mpi datatypes:
-/*#ifdef _OPENMP
-#pragma omp parallel for
-#endif*/
-        for (int j = 0; j < N_snds; ++j)
-        {
-            auto const& cctc = *send_cctc[j];
-
-            int number_of_sends = 0;
-            for (auto const& tag : cctc)
-                number_of_sends += tag.sbox.numPts();
-            number_of_sends *= ncomp;
-
-            std::vector<void*> addresses(number_of_sends, NULL);
-            std::vector<int> counts(number_of_sends, -1);
-            std::vector<MPI_Datatype> datatypes(number_of_sends, MPI_DATATYPE_NULL);
-
-            int offset = 0;
-            for (auto const& tag : cctc)
-            {
-                const Box& bx = tag.sbox;
-                auto sfab = this->array(tag.srcIndex);
-
-                // TEST: LoopConcurrentOnCpu or for(cell: numPts)
-                amrex::Loop( bx, ncomp,
-                [&] (int ii, int jj, int kk, int n) noexcept
-                {
-                    const IntVect idx = IntVect(ii,jj,kk);
-                    const Long cell = bx.index(idx) + offset; // TODO: add ncomp components
-                    std::tie(
-                        addresses[cell], 
-                        counts[cell], 
-                        datatypes[cell]
-                    ) = sfab.dataPtr()[cell].get_mpi_datatype();
-                });
-                offset += bx.numPts()*ncomp;
-            }
-
-            // get displacements in bytes for incoming user data
-            std::vector<MPI_Aint> displacements(addresses.size(), 0);
-            for (size_t i = 0; i < addresses.size(); i++) {
-                displacements[i] = (uint8_t*) addresses[i] - (uint8_t*) addresses[0];
-            }
-
-            MPI_Datatype send_datatype;
-            MPI_Type_create_struct(
-                number_of_sends,
-                &counts[0],
-                &displacements[0],
-                &datatypes[0],
-                &send_datatype
-            );
-            
-            MPI_Type_commit(&send_datatype);
-
-            const int rank = ParallelContext::global_to_local_rank(send_rank[j]);
-
-            MPI_Isend(
-                addresses[0],
-                1,
-                send_datatype,
-                rank,
-                SeqNum,
-                comm,
-                &send_reqs[j]);
-
-            MPI_Type_free(&send_datatype);
-        }
-    // TODO: Do MPI_Isends outside omp loop
-        /*
-        for (int j = 0; j < N_snds; ++j)
-        {
-            if (send_size[j].size() > 0) {
-                const int rank = ParallelContext::global_to_local_rank(send_rank[j]);
-                ...
-            }
-    	}*/
+        PostSends(*TheFB.m_SndTags,
+                    scomp, ncomp, SeqNum); 
     }
 
-    //FillBoundary_test();
+    FillBoundary_test();  
 
-    //
     // Do the local work.  Hope for a bit of communication/computation overlap.
-    //
     if (N_locs > 0)
     {
 /*#ifdef AMREX_USE_GPU
@@ -450,27 +301,117 @@ CellFabArray::UpdateRemotes(int scomp, int ncomp, const IntVect& nghost,
         }
         else
 #endif*/
-        {
             FB_local_copy_cpu(TheFB, scomp, ncomp);
 	}
-    }
 
-    //FillBoundary_test();
-#endif /*BL_USE_MPI*/                  
+    FillBoundary_test();  
+#endif
+    return;
 }
+
 
 #ifdef BL_USE_MPI
 void
-CellFabArray::PostRcvs (const MapOfCopyComTagContainers&  m_RcvTags,
-                        /*char*&                            the_recv_data,
-                        Vector<char*>&                    recv_data,
-                        Vector<std::size_t>&              recv_size,*/
-                        Vector<int>&                      recv_from,
-                        Vector<MPI_Request>&              recv_reqs,
-                        int                               icomp,
-                        int                               ncomp,
-                        int                               SeqNum)
+CellFabArray::PostSends (const MapOfCopyComTagContainers& m_SndTags,
+                        int icomp, int ncomp, int SeqNum)
 {
+
+    Vector<int>                         send_rank;
+    Vector<MPI_Request>&                send_reqs = fb_send_reqs;
+    Vector<const CopyComTagsContainer*> send_cctc;
+
+    fb_send_reqs.clear();
+
+    for (auto const& kv : m_SndTags)
+    {
+        send_rank.push_back(kv.first);
+        send_reqs.push_back(MPI_REQUEST_NULL);
+        send_cctc.push_back(&kv.second);
+    }
+
+    const int nsend = send_rank.size();
+
+    MPI_Comm comm = ParallelContext::CommunicatorSub();
+    // Get mpi datatypes:
+/*#ifdef _OPENMP
+#pragma omp parallel for
+#endif*/
+    for (int j = 0; j < nsend; ++j)
+    {
+        auto const& cctc = *send_cctc[j];
+
+        int number_of_sends = 0;
+        for (auto const& tag : cctc)
+            number_of_sends += tag.sbox.numPts();
+        number_of_sends *= ncomp;
+
+        std::vector<void*> addresses(number_of_sends, NULL);
+        std::vector<int> counts(number_of_sends, -1);
+        std::vector<MPI_Datatype> datatypes(number_of_sends, MPI_DATATYPE_NULL);
+
+        int offset = 0;
+        for (auto const& tag : cctc)
+        {
+            const Box& bx = tag.sbox;
+            auto sfab = this->array(tag.srcIndex);
+            
+            // TEST: LoopConcurrentOnCpu or for(cell: numPts)
+            amrex::Loop( bx, ncomp,
+            [&] (int ii, int jj, int kk, int n) noexcept
+            {
+                const IntVect idx = IntVect(ii,jj,kk);
+                const Long cell = bx.index(idx) + offset; // TODO: add ncomp components
+                std::tie(
+                    addresses[cell], 
+                    counts[cell], 
+                    datatypes[cell]
+                ) = sfab(idx, n+icomp).get_mpi_datatype();
+            });
+            offset += bx.numPts()*ncomp;
+        }
+
+        // get displacements in bytes for incoming user data
+        std::vector<MPI_Aint> displacements(addresses.size(), 0);
+        for (size_t i = 0; i < addresses.size(); i++) {
+            displacements[i] = (uint8_t*) addresses[i] - (uint8_t*) addresses[0];
+        }
+
+        MPI_Datatype send_datatype;
+        MPI_Type_create_struct(
+            number_of_sends,
+            &counts[0],
+            &displacements[0],
+            &datatypes[0],
+            &send_datatype
+        );
+        
+        MPI_Type_commit(&send_datatype);
+
+        const int rank = ParallelContext::global_to_local_rank(send_rank[j]);
+
+        MPI_Isend(
+            addresses[0],
+            1,
+            send_datatype,
+            rank,
+            SeqNum,
+            comm,
+            &send_reqs[j]);
+
+        MPI_Type_free(&send_datatype);
+    }
+    // TODO: Do MPI_Isends outside omp loop
+}
+
+void
+CellFabArray::PostRecvs (const MapOfCopyComTagContainers& m_RcvTags,
+                        int icomp, int ncomp, int SeqNum)
+{
+
+    Vector<int>&                        recv_from = fb_recv_from;
+    Vector<MPI_Request>&                recv_reqs = fb_recv_reqs;
+    Vector<const CopyComTagsContainer*> send_cctc;
+
     recv_from.clear();
     recv_reqs.clear();
 
@@ -494,7 +435,7 @@ CellFabArray::PostRcvs (const MapOfCopyComTagContainers&  m_RcvTags,
 
         int number_of_receives = 0;
         for (auto const& tag : cctc) {
-            number_of_receives += tag.sbox.numPts();
+            number_of_receives += tag.dbox.numPts();
         }
         number_of_receives *= ncomp;
 
@@ -505,8 +446,8 @@ CellFabArray::PostRcvs (const MapOfCopyComTagContainers&  m_RcvTags,
         int offset = 0;
         for (auto const& tag : cctc)
         {
-            const Box& bx = tag.sbox;
-            auto sfab = this->array(tag.dstIndex);
+            const Box& bx = tag.dbox;
+            auto dfab = this->array(tag.dstIndex);
             //std::cout << rank << " destination: " << tag.dstIndex <<"\n";
 
             // TEST: LoopConcurrentOnCpu or for(cell: numPts)
@@ -520,7 +461,7 @@ CellFabArray::PostRcvs (const MapOfCopyComTagContainers&  m_RcvTags,
                     addresses[cell], 
                     counts[cell], 
                     datatypes[cell]
-                ) = sfab(idx, n+icomp).get_mpi_datatype();
+                ) = dfab(idx, n+icomp).get_mpi_datatype();
             });
             offset += bx.numPts()*ncomp;
         }
@@ -540,22 +481,8 @@ CellFabArray::PostRcvs (const MapOfCopyComTagContainers&  m_RcvTags,
             &datatypes[0],
             &recv_datatype
         );
-        if (ret_val != MPI_SUCCESS) {
-            std::cerr << __FILE__ << ":" << __LINE__
-                << " MPI_Type_create_struct failed for process " << rank
-                << ": " << Error_String()(ret_val)
-                << std::endl;
-            abort();
-        }
         
         ret_val = MPI_Type_commit(&recv_datatype);
-        if (ret_val != MPI_SUCCESS) {
-            std::cerr << __FILE__ << ":" << __LINE__
-                << " MPI_Type_commit failed for process " << rank
-                << ": " << Error_String()(ret_val)
-                << std::endl;
-            abort();
-        }
 
         ret_val = MPI_Irecv(
             addresses[0],
@@ -565,14 +492,6 @@ CellFabArray::PostRcvs (const MapOfCopyComTagContainers&  m_RcvTags,
             SeqNum,
             comm,
             &recv_reqs[j]);
-
-        if (ret_val != MPI_SUCCESS) {
-            std::cerr << __FILE__ << ":" << __LINE__
-                << " MPI_Irecv failed for process " << rank
-                << ": " << Error_String()(ret_val)
-                << std::endl;
-            abort();
-        }
 
         MPI_Type_free(&recv_datatype);
     }
@@ -596,24 +515,15 @@ CellFabArray::FillBoundary_finish ()
     const int N_rcvs = TheFB.m_RcvTags->size();
     if (N_rcvs > 0)
     {
-        // ParallelDescriptor::Waitall(fb_recv_reqs, fb_recv_stat); fails some reason.
         MPI_Waitall(fb_recv_reqs.size(), 
                     fb_recv_reqs.dataPtr(), 
                     fb_recv_stat.dataPtr());
-#ifdef AMREX_DEBUG
-        if (!CheckRcvStats(fb_recv_stat, fb_recv_size, fb_tag))
-        {
-            amrex::Abort("FillBoundary_finish failed with wrong message size");
-        }
-#endif
-        }
 
         bool is_thread_safe = TheFB.m_threadsafe_rcv;
-
+    }
     const int N_snds = TheFB.m_SndTags->size();
     if (N_snds > 0) {
         Vector<MPI_Status> stats;
-        //FabArrayBase::WaitForAsyncSends(N_snds,fb_send_reqs,fb_send_data,stats);
         stats.resize(N_snds);
         MPI_Waitall(N_snds, fb_send_reqs.dataPtr(), stats.dataPtr());
     }

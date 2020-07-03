@@ -32,9 +32,12 @@ along with dccrg. If not, see <http://www.gnu.org/licenses/>.
 
 #include <AMReX.H>
 #include <AMReX_Print.H>
+#include <AMReX_Gpu.H>
+#include <AMReX_Utility.H>
 #include <AMReX_Geometry.H>
 #include <AMReX_MultiFab.H>
-#include <AMReX_FabArrayBase.H>
+#include <AMReX_Particles.H>
+#include <AMReX_ParIter.H>
 
 #include "CellFabArray.hpp"
 
@@ -44,70 +47,34 @@ using namespace std;
 using namespace boost;
 using namespace amrex;
 
-void update_cell_lists(CellFabArray &grid, Geometry &geom) {
+using PartIter = ParIter<1,1,0,0>;
 
-	// move particles to the particle list of the cell the particles are currently inside of
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
-		auto const& a = grid[mfi].array();
-		auto box = mfi.validbox();
+/*!
+Propagates particles between local cells and to/from remote cells into local cells.
 
-		LoopOnCpu(box, [&] (int i, int j, int k)
+The velocity field is constant in space and time and only along x direction.
+*/
+void propagate_particles(ParticleContainer<1,1,0,0> &grid) {
+
+	const double vx = 0.1;
+	// propagate particles in local cells and copies of remote neighbors
+	for (PartIter pti(grid, 0); pti.isValid(); ++pti)
+	{
+		auto &particles = pti.GetArrayOfStructs();
+		for (auto &p : particles )
 		{
-			const IntVect cell(i,j,k);
-			auto *previous_data = &a(cell);
-
-			const IntVect neighbor_cell = cell - IntVect(1,0,0);
-			auto *neighbor_data = &a(neighbor_cell);
-
-			vector<std::array<double, 3>>::size_type n = 0;
-			while (n < neighbor_data->particles.size()) {				
-				const IntVect current_cell = 
-					geom.CellIndex( neighbor_data->particles[n].data() );
-				
-				if (current_cell == cell) {
-					auto *current_data = &a(current_cell);
-					current_data->particles.push_back(neighbor_data->particles[n]);
-					current_data->number_of_particles = current_data->particles.size();
-				}
-				n++;
-			}
-		});
-	}
-
-	// remove particles which don't belong to their current cells
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
-		auto const& a = grid[mfi].array();
-		auto box = mfi.validbox();
-
-		LoopOnCpu(box, [&] (int i, int j, int k)
-		{
-			const IntVect previous_cell(i,j,k);
-			auto *previous_data = &a(previous_cell);
-
-			vector<std::array<double, 3>>::size_type n = 0;
-			while (n < previous_data->particles.size()) {
-
-				const IntVect current_cell = 
-					geom.CellIndex( previous_data->particles[n].data() );
-
-				if (current_cell == previous_cell) {
-					n++;
-				}
-				else {
-					previous_data->particles.erase(previous_data->particles.begin() + n);
-					previous_data->number_of_particles = previous_data->particles.size();
-				}
-			}
-		});
+			p.pos(0) += vx;
+		}
 	}
 }
+
 
 /*!
 Saves the local grid and its particles to separate vtk files.
 
 Each process saves its own files.
 */
-void save(const int rank, CellFabArray &grid, unsigned int step)
+void save(const int rank, ParticleContainer<1,1,0,0> &grid, unsigned int step)
 {
 	// write the grid
 	const string grid_file_name(
@@ -131,31 +98,22 @@ void save(const int rank, CellFabArray &grid, unsigned int step)
 		"Particle test\nASCII\nDATASET UNSTRUCTURED_GRID\n";
 
 	// calculate the total number local of particles
-	uint64_t total_particles = 0;
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
-		auto const& a = grid[mfi].array();
-		For(mfi.validbox(), [&] (int i, int j, int k)
-		{
-			total_particles += a(i,j,k).particles.size();
-		});
-	}
+	uint64_t total_particles = grid.TotalNumberOfParticles(true, true);
 	outfile << "POINTS " << total_particles << " float\n";
+
 	// write out coordinates
 	uint64_t written_particles = 0;
 	
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
-		auto const& a = grid[mfi].array();
-		For(mfi.validbox(), [&] (int i, int j, int k)
+	for (PartIter pti(grid, 0); pti.isValid(); ++pti)
+	{
+		const auto &particles = pti.GetArrayOfStructs();
+		for (auto p : particles )
 		{
-			auto const particles = a(i,j,k).particles;
-			for (int n = 0; n < a(i,j,k).particles.size(); n++)
-			{
-				outfile << particles[n][0] << "\t"
-						<< particles[n][1] << "\t"
-						<< particles[n][2] << "\n";
-				written_particles++;
-			}
-		});
+			outfile << p.pos(0) << "\t"
+				<< p.pos(1) << "\t"
+				<< p.pos(2) << "\n";
+			written_particles++;
+		}
 	}
 
 	if (written_particles != total_particles) {
@@ -186,14 +144,13 @@ void save(const int rank, CellFabArray &grid, unsigned int step)
 
 	// cell numbers of particles
 	outfile << "SCALARS cell int 1\nLOOKUP_TABLE default\n";
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
-		auto const& a = grid[mfi].array();
-		For(mfi.validbox(), [&] (int i, int j, int k) {
-			for (int n = 0; n < 3; n++)
-			{
-				outfile << mfi.index() << " ";
-			}
-		});
+	for (PartIter pti(grid, 0); pti.isValid(); ++pti)
+	{
+		const auto &particles = pti.GetArrayOfStructs();
+		for (int i = 0; i < 3; i++)
+		{
+			outfile << pti.index() << " ";
+		}
 	}
 	outfile << "\n";
 
@@ -220,7 +177,7 @@ int main_main()
         // Initialize the boxarray "ba" from the single box "bx"
         ba.define(domain);
         // Break up boxarray "ba" into chunks no larger than "max_grid_size" along a direction
-		ba.maxSize(5);
+		ba.maxSize(3);
         //ba.maxSize(max_grid_size);
 		
        // This defines the physical box.
@@ -228,7 +185,7 @@ int main_main()
                          AMREX_D_DECL(10,10,1));
 
         // periodic in x direction
-        Array<int,AMREX_SPACEDIM> is_periodic{{1,0,0}};
+        Array<int,AMREX_SPACEDIM> is_periodic{{1,1,1}};
 
         // This defines a Geometry object
         geom.define(domain, real_box, CoordSys::cartesian, is_periodic);
@@ -245,53 +202,26 @@ int main_main()
 
 	dm.strategy(DistributionMapping::Strategy::KNAPSACK);
 	
-	CellFabArray grid;
-	grid.define(ba, dm, Ncomp, IntVect(1,0,0));
-
-	// initial condition
-	const unsigned int max_particles_per_cell = 5;
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
-		// This is the valid Box of the current FArrayBox.
-		// By "valid", we mean the original ungrown Box in BoxArray.
-		const Box& box = mfi.validbox();
-
-		// A reference to the current FArrayBox in this loop iteration.
-		cArrayBox& fab = grid[mfi];
-
-		// Obtain Array4 from cArrayBox.
-		// Array4<Cell> const& a = grid.array(mfi);
-		auto const& a = fab.array();
-		
-		Dim3 lo = lbound(box);
-		Dim3 hi = ubound(box);
-		Loop(box, [=] (int i, int j, int k) 
-		{
-			Cell* cell_data = &a(i,j,k);
-			const unsigned int number_of_particles = i+1;
-				//= (unsigned int)ceil(max_particles_per_cell * double(rand()) / RAND_MAX);
-			for (unsigned int n = 0; n < number_of_particles; n++) {
-				std::array<double, 3> coordinates = {{
-					i + double(rand()) / RAND_MAX,
-					j + double(rand()) / RAND_MAX,
-					k + double(rand()) / RAND_MAX
-				}};
-
-				cell_data->particles.push_back(coordinates);
-				cell_data->number_of_particles = cell_data->particles.size();
-			}
-		});
-	}
-	std::cerr << rank << " initialized " << grid.local_size() << " box(es)" << "\n";
-
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi)
-	{
-		int non_local = 0;
-		auto box = mfi.validbox();
-
-		std::cerr << "Process " << rank << " initialized box: " << box << "\n";
-	}
+	ParticleContainer<1,1,0,0> grid;
+	grid.Define(geom, dm, ba);
+	ParticleInitType<1,1,0,0> pdata = {};
+	grid.InitNRandomPerCell(1, pdata);
+	grid.Redistribute();
 	
-	ParallelDescriptor::Barrier();
+	// value in the ghost box is the same as the real value on the opposite side
+	cout << rank << " has particles: " << grid.NumberOfParticlesAtLevel(0, true, true) << endl;
+	//BaseFab<Cell> fab;
+	
+	//FabArray< BaseFab<Cell> > grid(ba, dm, ...);
+	
+	//grid.FillBoundary(geom.periodicity());
+	/*
+	AmrCore amr;
+	amr.SetGeometry(0, geom);
+	amr.SetBoxArray(0, ba);
+	amr.SetDistributionMap(0, dm);
+	amrex::Print() << amr.CountCells() << "\n";*/
+
 	/*
 	Visualize the results for example with visit -o simple_particles.visit
 	or visit -o simple_grid.visit or overlay them both from the user interface.
@@ -307,9 +237,10 @@ int main_main()
 		visit_grid.open(visit_grid_name.c_str());
 		visit_grid << "!NBLOCKS " << comm_size << "\n";
 	}
-	
+
 	const unsigned int max_steps = 50;
 	for (unsigned int step = 0; step < max_steps; step++) {
+
 		// append current output file names to the visit files
 		if (rank == 0) {
 			for (int i = 0; i < comm_size; i++) {
@@ -324,57 +255,9 @@ int main_main()
 
 		save(rank, grid, step);
 
-		const double vx = 0.1;
-
-		// move particles in x-direction
-		for (MFIter mfi(grid); mfi.isValid(); ++mfi) { // loop over local boxes
-			auto const& a = grid[mfi].array();
-			auto box = mfi.validbox();
-			
-			// loop over cells
-			LoopOnCpu(box, [&] (int i, int j, int k) 
-			{	
-				// loop over particles
-				for (int n = 0; n < a(i,j,k).particles.size(); n++) 
-				{
-					auto &particle = a(i,j,k).particles[n];
-					particle[0] += vx;
-
-					// hande grid wrap around
-					if(particle[0] >= geom.period(0)) {
-						particle[0] -= geom.period(0);
-					}
-				}
-			});
-		}
-
-		// update particle counts between neighboring cells
-		Cell::transfer_particles = false;
-		grid.FillBoundary(geom.periodicity(), true); // cross=true to not fill corners
-		//ParallelDescriptor::Barrier();
-
-		// resize ghost cells (not working currently with MPI)
-    	const auto receiveTags = *grid.getFB(grid.nGrowVect(), geom.periodicity(), true, false).m_RcvTags;
-    	for (auto const& kv : receiveTags)
-		{
-			for (auto const& tag : kv.second)
-			{
-				const auto& bx = tag.dbox;
-				auto dfab = grid.array(tag.dstIndex);
-				amrex::Loop( bx, Ncomp,
-				[&] (int ii, int jj, int kk, int n) noexcept
-				{
-					const IntVect idx = IntVect(ii,jj,kk);
-					dfab(idx, n).resize(); // resizing
-				});
-			}
-		}
-
-		// update particle data between neighboring cells
-		Cell::transfer_particles = true;
-		grid.FillBoundary(geom.periodicity(), true);
-
-		update_cell_lists(grid, geom);
+		// update particle data between neighboring cells on different processes
+		grid.Redistribute(0, -1, 0, 1);
+		propagate_particles(grid);
 	}
 
 	// append final output file names to the visit files
@@ -408,8 +291,7 @@ int main(int argc, char* argv[])
 		cerr << "Coudln't initialize MPI." << endl;
 		abort();
 	}
-	//MPI_Errhandler_set(MPI_COMM_WORLD, MPI_ERRORS_RETURN); 
-
+	
     amrex::Initialize(argc, argv, false,  MPI_COMM_WORLD);
 	
 	main_main();
