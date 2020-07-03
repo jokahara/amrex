@@ -360,7 +360,7 @@ CellFabArray::PostSends (const MapOfCopyComTagContainers& m_SndTags,
             [&] (int ii, int jj, int kk, int n) noexcept
             {
                 const IntVect idx = IntVect(ii,jj,kk);
-                const Long cell = bx.index(idx) + offset; // TODO: add ncomp components
+                const Long cell = bx.index(idx) + bx.numPts()*n + offset;
                 std::tie(
                     addresses[cell], 
                     counts[cell], 
@@ -448,14 +448,13 @@ CellFabArray::PostRecvs (const MapOfCopyComTagContainers& m_RcvTags,
         {
             const Box& bx = tag.dbox;
             auto dfab = this->array(tag.dstIndex);
-            //std::cout << rank << " destination: " << tag.dstIndex <<"\n";
 
             // TEST: LoopConcurrentOnCpu or for(cell: numPts)
             amrex::Loop( bx, ncomp,
             [&] (int ii, int jj, int kk, int n) noexcept
             {
                 const IntVect idx = IntVect(ii,jj,kk);
-                const Long cell = bx.index(idx) + offset; // TODO: add ncomp components
+                const Long cell = bx.index(idx) + bx.numPts()*n  + offset;
 
                 std::tie(
                     addresses[cell], 
