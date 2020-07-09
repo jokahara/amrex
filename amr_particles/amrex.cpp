@@ -33,10 +33,9 @@ along with dccrg. If not, see <http://www.gnu.org/licenses/>.
 #include <AMReX.H>
 #include <AMReX_Print.H>
 #include <AMReX_Geometry.H>
-#include <AMReX_MultiFab.H>
 #include <AMReX_FabArrayBase.H>
 
-#include "CellFabArray.hpp"
+#include "AmrGrid.hpp"
 
 bool Cell::transfer_particles = false;
 
@@ -209,6 +208,11 @@ int main_main()
 	int rank = ParallelDescriptor::MyProc();
 	int comm_size = ParallelDescriptor::NProcs();
 	
+	AmrGrid amrGrid;
+	amrex::Print() << "levels" << amrGrid << "\n";
+	amrGrid.InitData();
+	return;
+
     BoxArray ba;
     Geometry geom;
     {
@@ -256,7 +260,7 @@ int main_main()
 		const Box& box = mfi.validbox();
 
 		// A reference to the current FArrayBox in this loop iteration.
-		cArrayBox& fab = grid[mfi];
+		auto& fab = grid[mfi];
 
 		// Obtain Array4 from cArrayBox.
 		// Array4<Cell> const& a = grid.array(mfi);

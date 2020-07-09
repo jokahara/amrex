@@ -1,11 +1,7 @@
 
-#include <cstdint>
-
 #include <AMReX_FabArray.H>
-#include <AMReX_FabArrayUtility.H>
 #include <AMReX_Periodicity.H>
-#include "CellArrayBox.hpp"
-#include <AMReX_FBI.H>
+#include "Cell.hpp"
 
 using namespace amrex;
 /**
@@ -19,10 +15,10 @@ using namespace amrex;
  * This class does NOT provide a copy constructor or assignment operator.
  */
 
-class CellFabArray : public FabArray< cArrayBox >
+class CellFabArray : public FabArray< BaseFab<Cell> >
 {
 public:
-
+    typedef BaseFab<Cell> cArrayBox;
     /**
     * \brief Constructs an empty CellFabArray.  Data can be defined at a later
     * time using the define member functions inherited
