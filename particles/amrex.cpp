@@ -256,9 +256,9 @@ int main_main()
 		const Box& box = mfi.validbox();
 
 		// A reference to the current FArrayBox in this loop iteration.
-		cArrayBox& fab = grid[mfi];
+		auto& fab = grid[mfi];
 
-		// Obtain Array4 from cArrayBox.
+		// Obtain Array4 from CellFab.
 		// Array4<Cell> const& a = grid.array(mfi);
 		auto const& a = fab.array();
 		

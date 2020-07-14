@@ -30,12 +30,7 @@ along with dccrg. If not, see <http://www.gnu.org/licenses/>.
 #include "ctime"
 #include "mpi.h"
 
-#include <AMReX.H>
-#include <AMReX_Print.H>
-#include <AMReX_Geometry.H>
-#include <AMReX_FabArrayBase.H>
-
-#include "AmrGrid.hpp"
+#include "Src/Amr.h"
 
 bool Cell::transfer_particles = false;
 
@@ -43,7 +38,7 @@ using namespace std;
 using namespace boost;
 using namespace amrex;
 
-void update_cell_lists(CellFabArray &grid, Geometry &geom) {
+void update_cell_lists(CellArray &grid, Geometry &geom) {
 
 	// move particles to the particle list of the cell the particles are currently inside of
 	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
@@ -106,7 +101,7 @@ Saves the local grid and its particles to separate vtk files.
 
 Each process saves its own files.
 */
-void save(const int rank, CellFabArray &grid, unsigned int step)
+void save(const int rank, AmrGrid &amrGrid, unsigned int step)
 {
 	// write the grid
 	const string grid_file_name(
@@ -131,30 +126,39 @@ void save(const int rank, CellFabArray &grid, unsigned int step)
 
 	// calculate the total number local of particles
 	uint64_t total_particles = 0;
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
-		auto const& a = grid[mfi].array();
-		For(mfi.validbox(), [&] (int i, int j, int k)
-		{
-			total_particles += a(i,j,k).particles.size();
-		});
+	for (int lev = 0; lev <= amrGrid.maxLevel(); lev++)
+	{
+		auto& grid = amrGrid[lev];
+		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
+			auto const& a = grid[mfi].array();
+			For(mfi.validbox(), [&] (int i, int j, int k)
+			{
+				total_particles += a(i,j,k).particles.size();
+			});
+		}
 	}
+	
 	outfile << "POINTS " << total_particles << " float\n";
 	// write out coordinates
 	uint64_t written_particles = 0;
 	
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
-		auto const& a = grid[mfi].array();
-		For(mfi.validbox(), [&] (int i, int j, int k)
-		{
-			auto const particles = a(i,j,k).particles;
-			for (int n = 0; n < a(i,j,k).particles.size(); n++)
+	for (int lev = 0; lev <= amrGrid.maxLevel(); lev++)
+	{
+		auto& grid = amrGrid[lev];
+		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
+			auto const& a = grid[mfi].array();
+			For(mfi.validbox(), [&] (int i, int j, int k)
 			{
-				outfile << particles[n][0] << "\t"
-						<< particles[n][1] << "\t"
-						<< particles[n][2] << "\n";
-				written_particles++;
-			}
-		});
+				auto const particles = a(i,j,k).particles;
+				for (int n = 0; n < a(i,j,k).particles.size(); n++)
+				{
+					outfile << particles[n][0] << "\t"
+							<< particles[n][1] << "\t"
+							<< particles[n][2] << "\n";
+					written_particles++;
+				}
+			});
+		}
 	}
 
 	if (written_particles != total_particles) {
@@ -181,19 +185,38 @@ void save(const int rank, CellFabArray &grid, unsigned int step)
 	for (uint64_t i = 0; i < total_particles; i++) {
 		outfile << rank << " ";
 	}
-	outfile << "\n";
+
+	outfile << "\nSCALARS level int 1\nLOOKUP_TABLE default\n";
+	for (int lev = 0; lev <= amrGrid.maxLevel(); lev++)
+	{
+		auto& grid = amrGrid[lev];
+		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
+			auto const& a = grid[mfi].array();
+			For(mfi.validbox(), [&] (int i, int j, int k) {
+				for (int n = 0; n < a(i,j,k).number_of_particles; n++)
+				{
+					outfile << lev << " ";
+				}
+			});
+		}
+	}
 
 	// cell numbers of particles
-	outfile << "SCALARS cell int 1\nLOOKUP_TABLE default\n";
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
-		auto const& a = grid[mfi].array();
-		For(mfi.validbox(), [&] (int i, int j, int k) {
-			for (int n = 0; n < 3; n++)
-			{
-				outfile << mfi.index() << " ";
-			}
-		});
+	outfile << "\nSCALARS cell int 1\nLOOKUP_TABLE default\n";
+	for (int lev = 0; lev <= amrGrid.maxLevel(); lev++)
+	{
+		auto& grid = amrGrid[lev];
+		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
+			auto const& a = grid[mfi].array();
+			For(mfi.validbox(), [&] (int i, int j, int k) {
+				for (int n = 0; n < 3; n++)
+				{
+					outfile << mfi.index() << " ";
+				}
+			});
+		}
 	}
+	
 	outfile << "\n";
 
 	outfile.close();
@@ -209,93 +232,37 @@ int main_main()
 	int comm_size = ParallelDescriptor::NProcs();
 	
 	AmrGrid amrGrid;
-	amrex::Print() << "levels" << amrGrid << "\n";
+	amrex::Print() << amrGrid;
+
 	amrGrid.InitData();
-	return;
 
-    BoxArray ba;
-    Geometry geom;
-    {
-        IntVect dom_lo(AMREX_D_DECL(0,0,0));
-        IntVect dom_hi(AMREX_D_DECL(9,9,0));
-        // box containing index space (cell centered by default)
-        Box domain(dom_lo, dom_hi);
-		
-        // Initialize the boxarray "ba" from the single box "bx"
-        ba.define(domain);
-        // Break up boxarray "ba" into chunks no larger than "max_grid_size" along a direction
-		ba.maxSize(6);
-        //ba.maxSize(max_grid_size);
-		
-       // This defines the physical box.
-        RealBox real_box(AMREX_D_DECL(0,0,0),
-                         AMREX_D_DECL(10,10,1));
-
-        // periodic in x direction
-        Array<int,AMREX_SPACEDIM> is_periodic{{1,0,0}};
-
-        // This defines a Geometry object
-        geom.define(domain, real_box, CoordSys::cartesian, is_periodic);
-    }
-	
-    // Nghost = number of ghost cells for each array 
-    IntVect Nghost(1,1,0);
-    
-    // Ncomp = number of components for each array
-    int Ncomp  = 1;
-	
-    // How Boxes are distrubuted among MPI processes
-    DistributionMapping dm(ba, ParallelDescriptor::NProcs());
-
-	dm.strategy(DistributionMapping::Strategy::KNAPSACK);
-
-	CellFabArray grid;
-	grid.define(ba, dm, Ncomp, Nghost);
-	
-	// initial condition
-	const unsigned int max_particles_per_cell = 5;
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
-		// This is the valid Box of the current FArrayBox.
-		// By "valid", we mean the original ungrown Box in BoxArray.
-		const Box& box = mfi.validbox();
-
-		// A reference to the current FArrayBox in this loop iteration.
-		auto& fab = grid[mfi];
-
-		// Obtain Array4 from cArrayBox.
-		// Array4<Cell> const& a = grid.array(mfi);
-		auto const& a = fab.array();
-		
-		Dim3 lo = lbound(box);
-		Dim3 hi = ubound(box);
-		Loop(box, [=] (int i, int j, int k) 
-		{
-			Cell* cell_data = &a(i,j,k);
-			const unsigned int number_of_particles = i+1;
-				//= (unsigned int)ceil(max_particles_per_cell * double(rand()) / RAND_MAX);
-			for (unsigned int n = 0; n < number_of_particles; n++) {
-				std::array<double, 3> coordinates = {{
-					i + double(rand()) / RAND_MAX,
-					j + double(rand()) / RAND_MAX,
-					k + double(rand()) / RAND_MAX
-				}};
-
-				cell_data->particles.push_back(coordinates);
-				cell_data->number_of_particles = cell_data->particles.size();
-			}
-		});
-	}
-	std::cerr << rank << " initialized " << grid.local_size() << " box(es)" << "\n";
-
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi)
+	for (int level = 0; level <= amrGrid.maxLevel(); level++)
 	{
-		int non_local = 0;
-		auto box = mfi.validbox();
+		std::cout << "Level " << level << ":\n"; 
+		auto &grid = amrGrid[level];
 
-		std::cerr << "Process " << rank << " initialized box: " << box << "\n";
+		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
+			const Box& box = mfi.validbox();
+			std::cout << "  Box: " << box << " ";
+			auto a = grid[mfi].array();
+			int n = 0;
+			LoopOnCpu(box, [&] (int i, int j, int k) 
+			{	
+				n += a(i,j,k).number_of_particles;
+			});
+
+			std::cout << "has " << n << " particles\n";
+
+			Real loc[3];
+			amrGrid.Geom(level).CellCenter(IntVect(box.loVect()), loc);
+			//std::cout << "  Real low: " << loc[0] << " " << loc[1] << " " << loc[2] << ":\n"; 
+
+			amrGrid.Geom(level).CellCenter(IntVect(box.hiVect()), loc);
+			//std::cout << "  Real high: " << loc[0] << " " << loc[1] << " " << loc[2] << ":\n"; 
+		}
 	}
 	
-	ParallelDescriptor::Barrier();
+	
 	/*
 	Visualize the results for example with visit -o simple_particles.visit
 	or visit -o simple_grid.visit or overlay them both from the user interface.
@@ -312,7 +279,7 @@ int main_main()
 		visit_grid << "!NBLOCKS " << comm_size << "\n";
 	}
 	
-	const unsigned int max_steps = 50;
+	const unsigned int max_steps = 1;
 	for (unsigned int step = 0; step < max_steps; step++) {
 		// append current output file names to the visit files
 		if (rank == 0) {
@@ -326,10 +293,13 @@ int main_main()
 			}
 		}
 
-		save(rank, grid, step);
+		save(rank, amrGrid, step);
 
 		const double vx = 0.1;
 
+		auto &grid = amrGrid[0];
+		int Ncomp = grid.nComp();
+		Geometry &geom = amrGrid.Geom(0);
 		// move particles in x-direction
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) { // loop over local boxes
 			auto const& a = grid[mfi].array();
@@ -395,7 +365,7 @@ int main_main()
 		visit_grid.close();
 	}
 
-	save(rank, grid, max_steps);
+	save(rank, amrGrid, max_steps);
 
 	clock_t after = clock();
 	cout << "Process " << rank << ": " << comm_size << " processes in total"
@@ -408,13 +378,13 @@ int main_main()
 
 int main(int argc, char* argv[])
 {
+	// argv must include inputs file
 	if (MPI_Init(&argc, &argv) != MPI_SUCCESS) {
 		cerr << "Coudln't initialize MPI." << endl;
 		abort();
 	}
-	//MPI_Errhandler_set(MPI_COMM_WORLD, MPI_ERRORS_RETURN); 
 
-    amrex::Initialize(argc, argv, false,  MPI_COMM_WORLD);
+    amrex::Initialize(argc, argv, true,  MPI_COMM_WORLD);
 	
 	main_main();
 
