@@ -37,7 +37,6 @@ public:
 			datatype = MPI_DOUBLE;
 
 		} else {
-
 			address = &(number_of_particles);
 			count = 1;
 			datatype = MPI_UNSIGNED;

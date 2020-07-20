@@ -6,7 +6,6 @@
 
 #include <AMReX_Box.H>
 #include <AMReX_BoxArray.H>
-#include <AMReX_MFCopyDescriptor.H>
 #include <AMReX_BCRec.H>
 #include <AMReX_Array.H>
 #include <AMReX_Vector.H>
@@ -14,11 +13,9 @@
 #include <AMReX_PhysBCFunct.H>
 #include <AMReX_Geometry.H>
 #include <AMReX_RealBox.H>
-#include <AMReX_StateDescriptor.H>
 
 #include "CellFabArray.h"
-
-class StateDataPhysBCFunct;
+#include "CopyDescriptor.h"
 
 
 /**
@@ -29,10 +26,8 @@ class StateDataPhysBCFunct;
 
 class StateData
 {
-    friend class StateDataPhysBCFunct;
 
 public:
-
     /**
     * \brief The default constructor.
     */
@@ -52,7 +47,6 @@ public:
     StateData (const Box&                 p_domain,
                const BoxArray&            grds,
 	           const DistributionMapping& dm,
-               const StateDescriptor*     d,
                Real                       cur_time,
                Real                       dt,
                const FabFactory<CellFab>& factory);
@@ -83,7 +77,6 @@ public:
     void define (const Box&                 p_domain,
                  const BoxArray&            grds,
 		         const DistributionMapping& dm,
-                 const StateDescriptor&     d,
                  Real                       cur_time,
                  Real                       dt,
                  const FabFactory<CellFab>& factory);
@@ -186,11 +179,11 @@ public:
 
     void syncNewTimeLevel (Real t_new);
 
-    void RegisterData (MultiFabCopyDescriptor& CellFabArrayCopyDesc,
-                       Vector<CellFabId>&      mfid);
+    void RegisterData (CopyDescriptor&     CellCopyDesc,
+                       Vector<FabArrayId>& mfid);
 
-    void InterpAddBox (MultiFabCopyDescriptor& CellFabArrayCopyDesc,
-                        Vector<CellFabId>&      mfid,
+    void InterpAddBox (CopyDescriptor&          CellCopyDesc,
+                        Vector<FabArrayId>&     mfid,
                         BoxList*                returnedUnfillableBoxes,
                         Vector<FillBoxId>&      returnedFillBoxIds,
                         const Box&              subbox,
@@ -200,8 +193,8 @@ public:
                         int                     num_comp,
                         bool                    extrap = false);
 
-    void InterpFillFab (MultiFabCopyDescriptor&  fabCopyDesc,
-                        const Vector<CellFabId>& mfid,
+    void InterpFillFab (CopyDescriptor&         CellCopyDesc,
+                        const Vector<FabArrayId>& mfid,
                         const Vector<FillBoxId>& fillBoxIds,
                         CellFab&                 dest,
                         Real                     time,
@@ -222,13 +215,8 @@ public:
     * \param src_comp
     * \param num_comp
     */
-    void FillBoundary (CellFab&       dest,
-                       Real           time,
-                       const Real*    dx,
-                       const RealBox& prob_domain,
-                       int            dest_comp,
-                       int            src_comp,
-                       int            num_comp = 1);
+
+    void FillBoundary ();
 
     void FillBoundary (Box const&      bx,
                        CellFab&        dest,
@@ -239,51 +227,9 @@ public:
                        int             num_comp);
 
     /**
-    * \brief Write the state data to a checkpoint file.
-    *
-    * \param name
-    * \param fullpathname
-    * \param os
-    * \param how
-    * \param dump_old
-    */
-    void checkPoint (const std::string& name,
-                     const std::string& fullpathname,
-                     std::ostream&      os,
-                     bool               dump_old = true);
-
-    /**
-    * \brief Restart with domain box, grids, and dmap provided
-    *
-    * \param is
-    * \param p_domain
-    * \param grds
-    * \param dm
-    * \param factroy
-    * \param d
-    * \param restart_file
-    */
-    void restart (std::istream&          is,
-		  const Box&             p_domain,
-		  const BoxArray&        grds,
-		  const DistributionMapping& dm,
-                  const FabFactory<CellFab>& factroy,
-                  const StateDescriptor& d,
-                  const std::string&     restart_file);
-
-    /**
-    * \brief or from another similar state
-    *
-    * \param d
-    * \param rhs
-    */
-    void restart (const StateDescriptor& d,
-		  const StateData& rhs);
-
-    /**
     * \brief Returns the StateDescriptor.
     */
-    const StateDescriptor* descriptor () const noexcept { return desc; }
+    //const StateDescriptor* descriptor () const noexcept { return desc; }
 
     /**
     * \brief Returns the valid domain.
@@ -309,16 +255,14 @@ public:
     * \brief Returns the current time.
     */
     Real curTime () const noexcept {
-	return (desc->timeType() == StateDescriptor::Point) ?
-	    new_time.stop : 0.5*(new_time.start + new_time.stop);
+	    return 0.5*(new_time.start + new_time.stop);
     }
 
     /**
     * \brief Returns the previous time.
     */
     Real prevTime () const noexcept {
-	return (desc->timeType() == StateDescriptor::Point) ?
-	    old_time.stop : 0.5*(old_time.start + old_time.stop);
+	    return 0.5*(old_time.start + old_time.stop);
     }
 
     /**
@@ -385,16 +329,6 @@ public:
 		  Real time) const;
 
     /**
-    * \brief Get the Arena used.
-    */
-    Arena* getArena () const noexcept { return arena; }
-
-    /**
-    * \brief Set the Arena used.
-    */
-    void setArena (Arena* ar) noexcept { arena = ar; }
-
-    /**
     * \brief These facilitate prereading FabArray headers to avoid
     * synchronization when reading multiple FabArrays
     */
@@ -410,9 +344,6 @@ private:
     static constexpr int MFNEWDATA = 0;
     static constexpr int MFOLDDATA = 1;
 
-    static Vector<std::string> fabArrayHeaderNames;
-    static std::map<std::string, Vector<char> > *faHeaderMap;
-
     std::unique_ptr<FabFactory<CellFab> > m_factory;
 
     struct TimeInterval
@@ -421,15 +352,12 @@ private:
         Real stop;
     };
 
-    //! Pointer to data descriptor.
-    const StateDescriptor* desc;
-
     //! Problem domain.
     Box domain;
 
     //! Grids defined at this level.
     BoxArray grids;
-    //
+    //! How grid is distributed among processes
     DistributionMapping dmap;
 
     //! Time variable assoc with new data.
@@ -444,8 +372,8 @@ private:
     //! Pointer to previous time data.
     std::unique_ptr<CellFabArray> old_data;
 
-    //! Arena we should use for allocating the data.
-    Arena* arena;
+    //! Boundary conditions
+    Vector<BCRec> bc;
 
     /**
     * \brief This is used as a temporary collection of FabArray header
@@ -455,29 +383,6 @@ private:
 
     //! This is used to store preread FabArray headers
     static std::map<std::string, Vector<char> > *faHeaderMap;  // ---- [faheader name, the header]
-
-    void restartDoit (std::istream& is, const std::string& restart_file);
-};
-
-class StateDataPhysBCFunct
-{
-public:
-
-    StateDataPhysBCFunct (StateData& sd, int sc, const Geometry& geom_);
-    
-    void operator() (CellFabArray& mf, int dcomp, int ncomp, IntVect const& nghost,
-                     Real time, int bccomp);
-
-    void FillBoundary (CellFabArray& mf, int dcomp, int ncomp, IntVect const& nghost,
-                       Real time, int bccomp) {
-        this->operator()(mf,dcomp,ncomp,nghost,time,bccomp);
-    }
-    
-private:
-    StateData* statedata;
-    int src_comp;
-    const Geometry& geom;
-
 };
 
 #endif /*_StateData_H_*/

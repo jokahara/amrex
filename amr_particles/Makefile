@@ -9,11 +9,12 @@ LIB_ZOLTAN = -L$(HOME)/vlasiator/libraries/zoltan/build/src/ -LIB_ZOLTAN
 
 INCS += ${INC_BOOST}
 INCS += ${INC_ZOLTAN}
+INCS += -I/Src
 
 LIBS += ${LIB_BOOST}
 LIBS += ${LIB_ZOLTAN}
 
-CXXFLAGS = -I $(HOME)/include  -L $(HOME)/lib -O3  -funroll-loops -std=c++17 -fopenmp -W -Wall -Wno-unused -fabi-version=0 -mavx -DPAPI_MEM
+CXXFLAGS = -I $(HOME)/include  -L $(HOME)/lib -O3  -funroll-loops -std=c++17 -fopenmp -W -Wno-unused -fabi-version=0 -mavx -DPAPI_MEM
 MATHFLAGS = -ffast-math
 
 clean:
@@ -35,14 +36,15 @@ COMPILE_LIB_FLAGS ?= $(shell awk '/Libs:/ {$$1=$$2=""; print $$0}' $(LIBDIR)/pkg
 CFLAGS := -I$(INCDIR) $(COMPILE_CPP_FLAGS)
 LFLAGS := -L$(LIBDIR) $(COMPILE_LIB_FLAGS)
 
-OBJS = CellFabArray.o AmrGrid.o amrex.o
-DEPS = Cell.h CellFabArray.hpp AmrGrid.hpp AmrGrid.cpp amrex.cpp
-
+OBJS = CellFabArray.o AmrLevel.o Amr.o amrex.o
+DEPS = Src/Amr.h Src/Amr.cpp Src/AmrLevel.h Src/AmrLevel.cpp Src/CellFabArray.h Src/CellFabArray.cpp amrex.cpp
 
 CellFabArray.o: ${DEPS}
-	${CMP} ${CXXFLAGS} ${MATHFLAGS} -c CellFabArray.cpp ${INCS} ${INC_AMREX} ${INC_DCCRG} $(CFLAGS)
-AmrGrid.o: ${DEPS}
-	${CMP} ${CXXFLAGS} ${MATHFLAGS} -c AmrGrid.cpp ${INCS} ${INC_AMREX} ${INC_DCCRG} $(CFLAGS)
+	${CMP} ${CXXFLAGS} ${MATHFLAGS} -c Src/CellFabArray.cpp ${INCS} ${INC_AMREX} ${INC_DCCRG} $(CFLAGS)
+AmrLevel.o: ${DEPS}
+	${CMP} ${CXXFLAGS} ${MATHFLAGS} -c Src/AmrLevel.cpp ${INCS} ${INC_AMREX} ${INC_DCCRG} $(CFLAGS)
+Amr.o: ${DEPS}
+	${CMP} ${CXXFLAGS} ${MATHFLAGS} -c Src/Amr.cpp ${INCS} ${INC_AMREX} ${INC_DCCRG} $(CFLAGS)
 amrex.o: ${DEPS}
 	${CMP} ${CXXFLAGS} ${MATHFLAGS} -c amrex.cpp ${INCS} ${INC_AMREX} ${INC_DCCRG} $(CFLAGS)
 amrex: $(OBJS) 

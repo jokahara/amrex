@@ -504,21 +504,23 @@ CellFabArray::FillBoundary_finish ()
     n_filled = fb_nghost;
 
     if (ParallelContext::NProcsSub() == 1) return;
-
+    
 #ifdef AMREX_USE_MPI
 
     const FB& TheFB = getFB(fb_nghost,fb_period,fb_cross,fb_epo);
     const int N_rcvs = TheFB.m_RcvTags->size();
     if (N_rcvs > 0)
     {
-        MPI_Waitall(N_rcvs, fb_recv_reqs.dataPtr(), fb_recv_stat.dataPtr());
+        MPI_Waitall(fb_recv_reqs.size(), fb_recv_reqs.dataPtr(), fb_recv_stat.dataPtr());
+        // = ParallelDescriptor::Waitall(fb_recv_reqs, fb_recv_stat);
     }
     
     const int N_snds = TheFB.m_SndTags->size();
     if (N_snds > 0) 
     {
-        Vector<MPI_Status> stats(N_snds);
-        MPI_Waitall(N_snds, fb_send_reqs.dataPtr(), stats.dataPtr());
+        Vector<MPI_Status> stats(fb_send_reqs.size());
+        MPI_Waitall(fb_send_reqs.size(), fb_send_reqs.dataPtr(), stats.dataPtr());
+        // = ParallelDescriptor::Waitall(fb_send_reqs, stats);
     }
 #endif
 }

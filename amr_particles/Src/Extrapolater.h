@@ -1,10 +1,15 @@
-#ifndef AMREX_EXTRAPOLATER_H_
-#define AMREX_EXTRAPOLATER_H_
+#ifndef Extrapolater_H_
+#define Extrapolater_H_
 
-#include <AMReX_MultiFab.H>
+#include <AMReX_iMultiFab.H>
 #include <AMReX_Geometry.H>
+#include "CellFabArray.h"
 
-namespace amrex {
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+using namespace amrex;
 
 namespace Extrapolater
 {
@@ -18,9 +23,35 @@ namespace Extrapolater
     const int interior = 1;
 
     //! It is expected that FillBoundary (w/ periodicity) has been called on mf.
-    void FirstOrderExtrap (MultiFab& mf, const Geometry& geom, int scomp, int ncomp);
-}
+    void FirstOrderExtrap (CellFabArray& mf, const Geometry& geom, int scomp, int ncomp)
+    {
+        Gpu::LaunchSafeGuard lsg(false); // xxxxx TODO gpu
 
+		BL_ASSERT(mf.nGrow() == 1);
+		BL_ASSERT(scomp >= 0);
+		BL_ASSERT(ncomp <= mf.nComp());
+
+		iMultiFab mask(mf.boxArray(), mf.DistributionMap(), 1, 1, MFInfo(),
+					   DefaultFabFactory<IArrayBox>());
+		mask.BuildMask(geom.Domain(), geom.periodicity(),
+				       finebnd, crsebnd, physbnd, interior);
+
+		int N = mf.nComp();
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+		for (MFIter mfi(mf); mfi.isValid(); ++mfi)
+		{
+			const Box& bx = mfi.validbox();
+			const IArrayBox& maskfab = mask[mfi];
+			const Box& maskbox = maskfab.box();
+			CellFab& datafab = mf[mfi];
+			const Box& databox = datafab.box();
+
+			//amrex_first_order_extrap()
+		}
+    }
 }
 
 #endif

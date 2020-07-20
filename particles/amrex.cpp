@@ -213,19 +213,19 @@ int main_main()
     Geometry geom;
     {
         IntVect dom_lo(AMREX_D_DECL(0,0,0));
-        IntVect dom_hi(AMREX_D_DECL(9,9,0));
+        IntVect dom_hi(AMREX_D_DECL(3,3,0));
         // box containing index space (cell centered by default)
         Box domain(dom_lo, dom_hi);
 		
         // Initialize the boxarray "ba" from the single box "bx"
         ba.define(domain);
         // Break up boxarray "ba" into chunks no larger than "max_grid_size" along a direction
-		ba.maxSize(6);
+		ba.maxSize(2);
         //ba.maxSize(max_grid_size);
 		
        // This defines the physical box.
         RealBox real_box(AMREX_D_DECL(0,0,0),
-                         AMREX_D_DECL(10,10,1));
+                         AMREX_D_DECL(4,4,1));
 
         // periodic in x direction
         Array<int,AMREX_SPACEDIM> is_periodic{{1,0,0}};
@@ -349,11 +349,11 @@ int main_main()
 		}
 
 		// update particle counts between neighboring cells
+		Print() << "update counts: \n";
 		Cell::transfer_particles = false;
 		grid.FillBoundary(geom.periodicity(), true); // cross=true to not fill corners
-		//ParallelDescriptor::Barrier();
-
-		// resize ghost cells (not working currently with MPI)
+		
+		// resize ghost cells
     	const auto receiveTags = *grid.getFB(grid.nGrowVect(), geom.periodicity(), true, false).m_RcvTags;
     	for (auto const& kv : receiveTags)
 		{
@@ -370,10 +370,12 @@ int main_main()
 			}
 		}
 
+		Print() << "update data: \n";
 		// update particle data between neighboring cells
 		Cell::transfer_particles = true;
 		grid.FillBoundary(geom.periodicity(), true);
 
+		Print() << "done: \n";
 		update_cell_lists(grid, geom);
 	}
 

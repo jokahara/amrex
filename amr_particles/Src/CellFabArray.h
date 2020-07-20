@@ -55,12 +55,24 @@ public:
         return false;
     }
 
-    CellFabArray (CellFabArray&& rhs) noexcept 
+    CellFabArray (CellFabArray&& rhs) noexcept
     : FabArray<CellFab>(std::move(rhs)) {}
     CellFabArray& operator= (CellFabArray&& rhs) noexcept;
 
     CellFabArray (const CellFabArray& rhs) = delete;
     CellFabArray& operator= (const CellFabArray& rhs) = delete;
+
+    /**
+    * \brief Swap from src to dst including nghost ghost cells.
+    * The two CellFabArrays MUST have the same underlying BoxArray.
+    * The swap is local.
+    */
+    /*static void Swap (CellFabArray& dst, CellFabArray& src,
+                      int srccomp, int dstcomp, int numcomp, int nghost)
+    { Swap(dst,src,srccomp,dstcomp,numcomp,IntVect(nghost)); }
+    
+    static void Swap (CellFabArray& dst, CellFabArray& src,
+                      int srccomp, int dstcomp, int numcomp, const IntVect& nghost);*/
 
     // Fills ghost cells of this CellFabArray
     void FillBoundary (bool cross = false);

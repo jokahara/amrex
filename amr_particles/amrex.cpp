@@ -38,8 +38,8 @@ using namespace std;
 using namespace boost;
 using namespace amrex;
 
-void update_cell_lists(CellArray &grid, Geometry &geom) {
-
+/*void update_cell_lists(CellArray &grid, Geometry &geom) {
+	
 	// move particles to the particle list of the cell the particles are currently inside of
 	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 		auto const& a = grid[mfi].array();
@@ -95,13 +95,14 @@ void update_cell_lists(CellArray &grid, Geometry &geom) {
 		});
 	}
 }
+*/
 
 /*!
 Saves the local grid and its particles to separate vtk files.
 
 Each process saves its own files.
 */
-void save(const int rank, AmrGrid &amrGrid, unsigned int step)
+/*void save(const int rank, Amr &amr, unsigned int step)
 {
 	// write the grid
 	const string grid_file_name(
@@ -126,9 +127,9 @@ void save(const int rank, AmrGrid &amrGrid, unsigned int step)
 
 	// calculate the total number local of particles
 	uint64_t total_particles = 0;
-	for (int lev = 0; lev <= amrGrid.maxLevel(); lev++)
+	for (int lev = 0; lev <= amr.maxlevel(); lev++)
 	{
-		auto& grid = amrGrid[lev];
+		auto& grid = amr[lev];
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 			auto const& a = grid[mfi].array();
 			For(mfi.validbox(), [&] (int i, int j, int k)
@@ -142,9 +143,9 @@ void save(const int rank, AmrGrid &amrGrid, unsigned int step)
 	// write out coordinates
 	uint64_t written_particles = 0;
 	
-	for (int lev = 0; lev <= amrGrid.maxLevel(); lev++)
+	for (int lev = 0; lev <= amr.maxlevel(); lev++)
 	{
-		auto& grid = amrGrid[lev];
+		auto& grid = amr[lev];
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 			auto const& a = grid[mfi].array();
 			For(mfi.validbox(), [&] (int i, int j, int k)
@@ -186,10 +187,10 @@ void save(const int rank, AmrGrid &amrGrid, unsigned int step)
 		outfile << rank << " ";
 	}
 
-	outfile << "\nSCALARS level int 1\nLOOKUP_TABLE default\n";
-	for (int lev = 0; lev <= amrGrid.maxLevel(); lev++)
+	outfile << "\nSCALARS lev int 1\nLOOKUP_TABLE default\n";
+	for (int lev = 0; lev <= amr.maxlev(); lev++)
 	{
-		auto& grid = amrGrid[lev];
+		auto& grid = amr[lev];
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 			auto const& a = grid[mfi].array();
 			For(mfi.validbox(), [&] (int i, int j, int k) {
@@ -203,9 +204,9 @@ void save(const int rank, AmrGrid &amrGrid, unsigned int step)
 
 	// cell numbers of particles
 	outfile << "\nSCALARS cell int 1\nLOOKUP_TABLE default\n";
-	for (int lev = 0; lev <= amrGrid.maxLevel(); lev++)
+	for (int lev = 0; lev <= amr.maxlev(); lev++)
 	{
-		auto& grid = amrGrid[lev];
+		auto& grid = amr[lev];
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 			auto const& a = grid[mfi].array();
 			For(mfi.validbox(), [&] (int i, int j, int k) {
@@ -221,7 +222,7 @@ void save(const int rank, AmrGrid &amrGrid, unsigned int step)
 
 	outfile.close();
 }
-
+*/
 
 int main_main()
 {
@@ -230,20 +231,42 @@ int main_main()
 
 	int rank = ParallelDescriptor::MyProc();
 	int comm_size = ParallelDescriptor::NProcs();
+	amrex::Print() << "   Running " << comm_size << " processes\n";
+	amrex::AllPrint() << rank << "\n";
 	
-	AmrGrid amrGrid;
-	amrex::Print() << amrGrid;
+	Amr amr;
+	amrex::Print() << "   Domain: " << amr.Geom(0).Domain().size() << "\n";
+	amr.init();
 
-	amrGrid.InitData();
-
-	for (int level = 0; level <= amrGrid.maxLevel(); level++)
+	for (int lev = 0; lev <= amr.maxLevel(); lev++)
 	{
-		std::cout << "Level " << level << ":\n"; 
-		auto &grid = amrGrid[level];
+		CellFabArray& grid = amr.getLevel(lev).getData();
+ 		Print() << "   Nghost: " << grid.nGrowVect() << ", Ncomp: " << grid.nComp() << "\n";
 
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 			const Box& box = mfi.validbox();
-			std::cout << "  Box: " << box << " ";
+			auto a = grid[mfi].array();
+			int n = 0;
+			LoopOnCpu(box, [&] (int i, int j, int k) 
+			{
+				a(i,j,k).number_of_particles = i*j;
+			});
+		}
+
+		Cell::transfer_particles = false;
+		grid.FillBoundary(amr.Geom(lev).periodicity());
+	}
+	
+	for (int lev = 0; lev <= amr.maxLevel(); lev++)
+	{
+		AmrLevel &level = amr.getLevel(0);
+		Print() << "lev " << lev << " has " << level.countCells() << " cells\n"; 
+		
+		CellFabArray& grid = level.getData();
+
+		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
+			const Box& box = mfi.validbox();
+			AllPrint()<< "  Box: " << box << " ";
 			auto a = grid[mfi].array();
 			int n = 0;
 			LoopOnCpu(box, [&] (int i, int j, int k) 
@@ -251,14 +274,14 @@ int main_main()
 				n += a(i,j,k).number_of_particles;
 			});
 
-			std::cout << "has " << n << " particles\n";
+			AllPrint() << "has " << n << " particles\n";
 
-			Real loc[3];
-			amrGrid.Geom(level).CellCenter(IntVect(box.loVect()), loc);
-			//std::cout << "  Real low: " << loc[0] << " " << loc[1] << " " << loc[2] << ":\n"; 
+			/*Real loc[3];
+			amr.Geom(lev).CellCenter(IntVect(box.loVect()), loc);
+			AllPrint() << "  Real low: " << loc[0] << " " << loc[1] << " " << loc[2] << ":\n"; 
 
-			amrGrid.Geom(level).CellCenter(IntVect(box.hiVect()), loc);
-			//std::cout << "  Real high: " << loc[0] << " " << loc[1] << " " << loc[2] << ":\n"; 
+			amr.Geom(lev).CellCenter(IntVect(box.hiVect()), loc);
+			AllPrint() << "  Real high: " << loc[0] << " " << loc[1] << " " << loc[2] << ":\n"; */
 		}
 	}
 	
@@ -279,7 +302,7 @@ int main_main()
 		visit_grid << "!NBLOCKS " << comm_size << "\n";
 	}
 	
-	const unsigned int max_steps = 1;
+	/*const unsigned int max_steps = 1;
 	for (unsigned int step = 0; step < max_steps; step++) {
 		// append current output file names to the visit files
 		if (rank == 0) {
@@ -293,13 +316,13 @@ int main_main()
 			}
 		}
 
-		save(rank, amrGrid, step);
+		save(rank, amr, step);
 
 		const double vx = 0.1;
 
-		auto &grid = amrGrid[0];
+		auto &grid = amr[0];
 		int Ncomp = grid.nComp();
-		Geometry &geom = amrGrid.Geom(0);
+		Geometry &geom = amr.Geom(0);
 		// move particles in x-direction
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) { // loop over local boxes
 			auto const& a = grid[mfi].array();
@@ -365,10 +388,10 @@ int main_main()
 		visit_grid.close();
 	}
 
-	save(rank, amrGrid, max_steps);
+	save(rank, amr, max_steps);*/
 
 	clock_t after = clock();
-	cout << "Process " << rank << ": " << comm_size << " processes in total"
+	std::cout << "Process " << rank << ": " << comm_size << " processes in total"
 		<< ": simulation took " << double(after - before) / CLOCKS_PER_SEC
 		<< " seconds "
 		<< endl;
@@ -380,7 +403,7 @@ int main(int argc, char* argv[])
 {
 	// argv must include inputs file
 	if (MPI_Init(&argc, &argv) != MPI_SUCCESS) {
-		cerr << "Coudln't initialize MPI." << endl;
+		cerr << "Couldn't initialize MPI." << endl;
 		abort();
 	}
 

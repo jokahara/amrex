@@ -1,6 +1,51 @@
 
 #include "CellFabArray.h"
 
+/*void CellFabArray::Swap (CellFabArray& dst, CellFabArray& src,
+           int srccomp, int dstcomp, int numcomp, const IntVect& nghost)
+{
+    BL_ASSERT(dst.boxArray() == src.boxArray());
+    BL_ASSERT(dst.distributionMap == src.distributionMap);
+    BL_ASSERT(dst.nGrowVect().allGE(nghost) and src.nGrowVect().allGE(nghost));
+
+    BL_PROFILE("CellFabArray::Swap()");
+
+    // We can take a shortcut and do a std::swap if we're swapping all of the data
+    // and they are allocated in the same Arena.
+
+    bool explicit_swap = true;
+
+    if (srccomp == dstcomp && dstcomp == 0 && src.nComp() == dst.nComp() &&
+        src.nGrowVect() == nghost && src.nGrowVect() == dst.nGrowVect()) {
+        explicit_swap = false;
+    }
+
+    if (!explicit_swap) {
+
+        std::swap(dst, src);
+
+    } else {
+        Print() << "WARNING: Using explicit_swap!\n";
+#ifdef _OPENMP
+#pragma omp parallel if (Gpu::notInLaunchRegion())
+#endif
+        for (MFIter mfi(dst,TilingIfNotGPU()); mfi.isValid(); ++mfi)
+        {
+            const Box& bx = mfi.growntilebox(nghost);
+            if (bx.ok()) {
+                auto sfab = src.array(mfi);
+                auto dfab = dst.array(mfi);
+                AMREX_HOST_DEVICE_PARALLEL_FOR_4D ( bx, numcomp, i, j, k, n,
+                {
+                    const Cell tmp        = dfab(i,j,k,n+dstcomp);
+                    dfab(i,j,k,n+dstcomp) = sfab(i,j,k,n+srccomp);
+                    sfab(i,j,k,n+srccomp) = tmp;
+                });
+            }
+        }
+    }
+}*/
+
 void
 CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
                                     const Periodicity& period, bool cross 
@@ -80,8 +125,6 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
                     scomp, ncomp, SeqNum); 
     }
 
-    //FillBoundary_test();  
-
     // Do the local work.  Hope for a bit of communication/computation overlap.
     if (N_locs > 0)
     {
@@ -94,8 +137,6 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
 #endif
             FB_local_copy_cpu(TheFB, scomp, ncomp);
 	}
-
-    //FillBoundary_test();  
 #endif
     return;
 }
@@ -195,8 +236,8 @@ CellFabArray::PostSends (const MapOfCopyComTagContainers& m_SndTags,
 
 void
 CellFabArray::PostReceives (const MapOfCopyComTagContainers& m_RcvTags, 
-                        Vector<MPI_Request>& recv_reqs,
-                        int icomp, int ncomp, int SeqNum)
+                            Vector<MPI_Request>& recv_reqs,
+                            int icomp, int ncomp, int SeqNum)
 {
 
     Vector<int>&                        recv_from = fb_recv_from;
@@ -304,14 +345,16 @@ CellFabArray::FillBoundary_finish ()
     const int N_rcvs = TheFB.m_RcvTags->size();
     if (N_rcvs > 0)
     {
-        MPI_Waitall(N_rcvs, fb_recv_reqs.dataPtr(), fb_recv_stat.dataPtr());
+        MPI_Waitall(fb_recv_reqs.size(), fb_recv_reqs.dataPtr(), fb_recv_stat.dataPtr());
+        // equivalent to ParallelDescriptor::Waitall(fb_recv_reqs, fb_recv_stat);
     }
     
     const int N_snds = TheFB.m_SndTags->size();
     if (N_snds > 0) 
     {
-        Vector<MPI_Status> stats(N_snds);
-        MPI_Waitall(N_snds, fb_send_reqs.dataPtr(), stats.dataPtr());
+        Vector<MPI_Status> stats(fb_send_reqs.size());
+        MPI_Waitall(fb_send_reqs.size(), fb_send_reqs.dataPtr(), stats.dataPtr());
+        // equivalent to ParallelDescriptor::Waitall(fb_send_reqs, stats);
     }
 #endif
 }
