@@ -345,6 +345,7 @@ CellFabArray::FillBoundary_finish ()
     const int N_rcvs = TheFB.m_RcvTags->size();
     if (N_rcvs > 0)
     {
+        fb_recv_stat.resize(N_rcvs);
         MPI_Waitall(fb_recv_reqs.size(), fb_recv_reqs.dataPtr(), fb_recv_stat.dataPtr());
         // equivalent to ParallelDescriptor::Waitall(fb_recv_reqs, fb_recv_stat);
     }
@@ -352,7 +353,7 @@ CellFabArray::FillBoundary_finish ()
     const int N_snds = TheFB.m_SndTags->size();
     if (N_snds > 0) 
     {
-        Vector<MPI_Status> stats(fb_send_reqs.size());
+        Vector<MPI_Status> stats(N_snds);
         MPI_Waitall(fb_send_reqs.size(), fb_send_reqs.dataPtr(), stats.dataPtr());
         // equivalent to ParallelDescriptor::Waitall(fb_send_reqs, stats);
     }
@@ -545,7 +546,7 @@ CellFabArray::ParallelCopy (const CellFabArray& src,
 	
         if (N_snds > 0 && !thecpc.m_SndTags->empty()) {
             Vector<MPI_Status> stats(N_snds);
-            MPI_Waitall(N_snds, send_reqs.dataPtr(), stats.dataPtr());
+            MPI_Waitall(send_reqs.size(), send_reqs.dataPtr(), stats.dataPtr());
         }
 
         ipass     += NC;

@@ -241,7 +241,6 @@ int main_main()
 	for (int lev = 0; lev <= amr.maxLevel(); lev++)
 	{
 		CellFabArray& grid = amr.getLevel(lev).getData();
- 		Print() << "   Nghost: " << grid.nGrowVect() << ", Ncomp: " << grid.nComp() << "\n";
 
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 			const Box& box = mfi.validbox();
@@ -263,6 +262,7 @@ int main_main()
 		Print() << "lev " << lev << " has " << level.countCells() << " cells\n"; 
 		
 		CellFabArray& grid = level.getData();
+ 		Print() << "   Nghost: " << grid.nGrowVect() << ", Ncomp: " << grid.nComp() << "\n";
 
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 			const Box& box = mfi.validbox();
@@ -391,7 +391,7 @@ int main_main()
 	save(rank, amr, max_steps);*/
 
 	clock_t after = clock();
-	std::cout << "Process " << rank << ": " << comm_size << " processes in total"
+	Print() << "Finalizing"
 		<< ": simulation took " << double(after - before) / CLOCKS_PER_SEC
 		<< " seconds "
 		<< endl;

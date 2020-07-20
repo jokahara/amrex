@@ -1,7 +1,7 @@
 
 #include <AMReX_FabArray.H>
 #include <AMReX_Periodicity.H>
-#include "Cell.hpp"
+#include "Cell.h"
 
 using namespace amrex;
 /**
@@ -269,7 +269,7 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
     if (N_rcvs > 0) {
         PostReceives(*TheFB.m_RcvTags, fb_send_reqs,
                     scomp, ncomp, SeqNum);
-        fb_recv_stat.resize(N_rcvs);
+        //fb_recv_stat.resize(N_rcvs);
     }
 
     // Post sends
@@ -511,6 +511,7 @@ CellFabArray::FillBoundary_finish ()
     const int N_rcvs = TheFB.m_RcvTags->size();
     if (N_rcvs > 0)
     {
+        fb_recv_stat.resize(N_rcvs);
         MPI_Waitall(fb_recv_reqs.size(), fb_recv_reqs.dataPtr(), fb_recv_stat.dataPtr());
         // = ParallelDescriptor::Waitall(fb_recv_reqs, fb_recv_stat);
     }
@@ -518,7 +519,7 @@ CellFabArray::FillBoundary_finish ()
     const int N_snds = TheFB.m_SndTags->size();
     if (N_snds > 0) 
     {
-        Vector<MPI_Status> stats(fb_send_reqs.size());
+        Vector<MPI_Status> stats(N_snds);
         MPI_Waitall(fb_send_reqs.size(), fb_send_reqs.dataPtr(), stats.dataPtr());
         // = ParallelDescriptor::Waitall(fb_send_reqs, stats);
     }

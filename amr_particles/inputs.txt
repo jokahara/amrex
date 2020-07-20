@@ -8,6 +8,7 @@ geometry.prob_lo     =  0.0  0.0  0.0
 geometry.prob_hi     =  4.0  4.0  1.0
 amr.n_cell           =  4  4  1         # should be even in all directions
 
+# default values
 n_comp               =  1     # number of components
 n_ghost              =  1     # number of ghost cells around fab array
 

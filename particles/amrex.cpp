@@ -36,7 +36,7 @@ along with dccrg. If not, see <http://www.gnu.org/licenses/>.
 #include <AMReX_MultiFab.H>
 #include <AMReX_FabArrayBase.H>
 
-#include "CellFabArray.hpp"
+#include "CellFabArray.h"
 
 bool Cell::transfer_particles = false;
 
@@ -79,7 +79,7 @@ void update_cell_lists(CellFabArray &grid, Geometry &geom) {
 		auto const& a = grid[mfi].array();
 		auto box = mfi.validbox();
 
-		LoopOnCpu(box, [&] (int i, int j, int k)
+		For(box, [&] (int i, int j, int k)
 		{
 			const IntVect previous_cell(i,j,k);
 			auto *previous_data = &a(previous_cell);
@@ -349,7 +349,6 @@ int main_main()
 		}
 
 		// update particle counts between neighboring cells
-		Print() << "update counts: \n";
 		Cell::transfer_particles = false;
 		grid.FillBoundary(geom.periodicity(), true); // cross=true to not fill corners
 		
@@ -370,12 +369,10 @@ int main_main()
 			}
 		}
 
-		Print() << "update data: \n";
 		// update particle data between neighboring cells
 		Cell::transfer_particles = true;
 		grid.FillBoundary(geom.periodicity(), true);
 
-		Print() << "done: \n";
 		update_cell_lists(grid, geom);
 	}
 
