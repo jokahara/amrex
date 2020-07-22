@@ -5,7 +5,7 @@ LNK = mpic++
 INC_DCCRG = -I$(HOME)/AMR/dccrg
 
 INC_ZOLTAN = -I$(HOME)/vlasiator/libraries/zoltan/src/include
-LIB_ZOLTAN = -L$(HOME)/vlasiator/libraries/zoltan/build/src/ -LIB_ZOLTAN
+LIB_ZOLTAN = -L$(HOME)/vlasiator/libraries/zoltan/build/src/ -lzoltan
 
 INCS += ${INC_BOOST}
 INCS += ${INC_ZOLTAN}

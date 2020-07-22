@@ -10,13 +10,6 @@ LIB_BOOST = -L/usr/lib/x86_64-linux-gnu/ -lboost_program_options
 INC_ZOLTAN = -I$(HOME)/vlasiator/libraries/zoltan/src/include
 LIB_ZOLTAN = -L$(HOME)/vlasiator/libraries/zoltan/build/src/ -lzoltan
 
-INC_SAMRAI = -I$(HOME)/AMR/SAMRAI/build/include
-LIB_SAMRAI = -L$(HOME)/AMR/SAMRAI/build/lib/ -L/usr/lib/x86_64-linux-gnu/hdf5/openmpi/ -lSAMRAI_geom -lSAMRAI_mesh -lSAMRAI_pdat -lSAMRAI_xfer -lSAMRAI_hier -lSAMRAI_tbox -lhdf5
-
-INC_CORGI = -I$(HOME)/AMR/corgi 
-INC_CORGI += -I$(HOME)/AMR/corgi/mpi4cpp/include/
-INC_CORGI += -I$(HOME)/AMR/corgi/mpi4cpp/tools/optional-lite/include/
-
 INCS += ${INC_BOOST}
 INCS += ${INC_ZOLTAN}
 
@@ -49,13 +42,3 @@ amrex.o: amrex.cpp
 	${CMP} ${CXXFLAGS} ${FLAGS} ${MATHFLAGS} -c amrex.cpp ${INCS} ${INC_AMREX} ${INC_DCCRG} $(CFLAGS)
 amrex: amrex.o
 	${CMP} ${CXXFLAGS} ${FLAGS} ${MATHFLAGS} -o amrex amrex.o ${LIBS} $(LFLAGS)
-
-corgi.o: corgi.cpp 
-	${CMP} ${CXXFLAGS} ${FLAGS} ${MATHFLAGS} -c corgi.cpp ${INCS} ${INC_CORGI} ${INC_DCCRG} $(CFLAGS)
-corgi: corgi.o
-	${CMP} ${CXXFLAGS} ${FLAGS} ${MATHFLAGS} -o corgi corgi.o ${LIBS} $(LFLAGS)
-	
-samrai.o: samrai.cpp 
-	${CMP} ${CXXFLAGS} ${FLAGS} ${MATHFLAGS} -c samrai.cpp ${INCS} ${INC_SAMRAI} ${INC_DCCRG} $(CFLAGS)
-samrai: samrai.o
-	${CMP} ${CXXFLAGS} ${FLAGS} ${MATHFLAGS} -o samrai samrai.o ${LIBS} ${LIB_SAMRAI}
