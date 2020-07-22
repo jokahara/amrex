@@ -4,7 +4,7 @@ LNK = mpic++
 #set default architecture, can be overridden from the compile line
 ARCH = ${VLASIATOR_ARCH}
 
-include ../MAKE/${ARCH}
+include ../MAKE/Makefile.${ARCH}
 
 INCS += ${INC_BOOST}
 INCS += ${INC_ZOLTAN}
