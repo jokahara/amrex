@@ -19,10 +19,7 @@ along with dccrg. If not, see <http://www.gnu.org/licenses/>.
 
 #include "algorithm"
 #include "boost/array.hpp"
-#include "boost/foreach.hpp"
 #include "boost/lexical_cast.hpp"
-#include "boost/mpi.hpp"
-#include "boost/unordered_set.hpp"
 #include "cstdlib"
 #include "iomanip"
 #include "iostream"

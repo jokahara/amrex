@@ -4,21 +4,25 @@ LNK = mpic++
 #set default architecture, can be overridden from the compile line
 ARCH = ${VLASIATOR_ARCH}
 
-include ../MAKE/Makefile.${ARCH}
+include ../MAKE/Makefile.laptop #${ARCH}
 
 INCS += ${INC_BOOST}
 INCS += ${INC_ZOLTAN}
+INCS += -I/Src
 
 LIBS += ${LIB_BOOST}
 LIBS += ${LIB_ZOLTAN}
+
+CXXFLAGS = -I $(HOME)/include  -L $(HOME)/lib -O3  -funroll-loops -std=c++17 -fopenmp -W -Wno-unused -fabi-version=0 -mavx -DPAPI_MEM
+MATHFLAGS = -ffast-math
 
 clean:
 	rm -rf *.o dccrg amrex
 
 dccrg.o: dccrg.cpp 
-	${CMP} ${CXXFLAGS} ${FLAGS} ${MATHFLAGS} -c dccrg.cpp ${INCS} ${INC_DCCRG}
+	${CMP} ${CXXFLAGS} ${MATHFLAGS} -c dccrg.cpp ${INCS} ${INC_DCCRG}
 dccrg: dccrg.o
-	${CMP} ${CXXFLAGS} ${FLAGS} ${MATHFLAGS} -o dccrg dccrg.o ${LIBS}
+	${CMP} ${CXXFLAGS} ${MATHFLAGS} -o dccrg dccrg.o ${LIBS}
 
 AMREX_LIBRARY_HOME ?= ${HOME}/AMR/amrex/tmp_install_dir/
 
@@ -31,7 +35,16 @@ COMPILE_LIB_FLAGS ?= $(shell awk '/Libs:/ {$$1=$$2=""; print $$0}' $(LIBDIR)/pkg
 CFLAGS := -I$(INCDIR) $(COMPILE_CPP_FLAGS)
 LFLAGS := -L$(LIBDIR) $(COMPILE_LIB_FLAGS)
 
-amrex.o: amrex.cpp 
-	${CMP} ${CXXFLAGS} ${FLAGS} ${MATHFLAGS} -c amrex.cpp ${INCS} ${INC_AMREX} ${INC_DCCRG} $(CFLAGS)
-amrex: amrex.o
-	${CMP} ${CXXFLAGS} ${FLAGS} ${MATHFLAGS} -o amrex amrex.o ${LIBS} $(LFLAGS)
+OBJS = CellFabArray.o AmrLevel.o Amr.o amrex.o
+DEPS = Src/Amr.h Src/Amr.cpp Src/AmrLevel.h Src/AmrLevel.cpp Src/CellFabArray.h Src/CellFabArray.cpp amrex.cpp
+
+CellFabArray.o: ${DEPS}
+	${CMP} ${CXXFLAGS} ${MATHFLAGS} -c Src/CellFabArray.cpp ${INCS} ${INC_AMREX} ${INC_DCCRG} $(CFLAGS)
+AmrLevel.o: ${DEPS}
+	${CMP} ${CXXFLAGS} ${MATHFLAGS} -c Src/AmrLevel.cpp ${INCS} ${INC_AMREX} ${INC_DCCRG} $(CFLAGS)
+Amr.o: ${DEPS}
+	${CMP} ${CXXFLAGS} ${MATHFLAGS} -c Src/Amr.cpp ${INCS} ${INC_AMREX} ${INC_DCCRG} $(CFLAGS)
+amrex.o: ${DEPS}
+	${CMP} ${CXXFLAGS} ${MATHFLAGS} -c amrex.cpp ${INCS} ${INC_AMREX} ${INC_DCCRG} $(CFLAGS)
+amrex: $(OBJS) 
+	${CMP} ${CXXFLAGS} ${MATHFLAGS} -o amrex $(OBJS) ${LIBS} $(LFLAGS)
