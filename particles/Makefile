@@ -1,23 +1,15 @@
 
-CMP = mpic++
-LNK = mpic++
 
-INC_DCCRG = -I$(HOME)/AMR/dccrg
+#set default architecture, can be overridden from the compile line
+ARCH = ${VLASIATOR_ARCH}
 
-INC_BOOST = -I/usr/include/boost/
-LIB_BOOST = -L/usr/lib/x86_64-linux-gnu/ -lboost_program_options
-
-INC_ZOLTAN = -I$(HOME)/vlasiator/libraries/zoltan/src/include
-LIB_ZOLTAN = -L$(HOME)/vlasiator/libraries/zoltan/build/src/ -lzoltan
+include ../MAKE/${ARCH}
 
 INCS += ${INC_BOOST}
 INCS += ${INC_ZOLTAN}
 
 LIBS += ${LIB_BOOST}
 LIBS += ${LIB_ZOLTAN}
-
-CXXFLAGS = -I $(HOME)/include  -L $(HOME)/lib -O3  -funroll-loops -std=c++17 -fopenmp -W -Wall -Wno-unused -fabi-version=0 -mavx -DPAPI_MEM
-MATHFLAGS = -ffast-math
 
 clean:
 	rm -rf *.o dccrg amrex

@@ -1,0 +1,88 @@
+# For Yann's laptop
+
+#======== Vectorization ==========
+#Set vector backend type for vlasov solvers, sets precision and length. 
+#NOTE this has to have the same precision as the distribution function define (DISTRIBUTION_FP_PRECISION)
+#Options: 
+# AVX:	    VEC4D_AGNER, VEC4F_AGNER, VEC8F_AGNER
+# AVX512:   VEC8D_AGNER, VEC16F_AGNER
+# Fallback: VEC4D_FALLBACK, VEC4F_FALLBACK, VEC8F_FALLBACK
+
+ifeq ($(DISTRIBUTION_FP_PRECISION),SPF)
+#Single-precision        
+	VECTORCLASS = VEC4F_FALLBACK
+else
+#Double-precision
+	VECTORCLASS = VEC4D_FALLBACK
+endif
+
+
+#======== Allocator =========
+#Use TBB malloc
+
+CMP = mpic++
+LNK = mpic++
+
+PAPI_FLAG =
+
+#======== Vectorization ==========
+#Set vector backend type for vlasov solvers, sets precision and length. 
+#NOTE this has to have the same precision as the distribution function define (DISTRIBUTION_FP_PRECISION)
+#Options: 
+# AVX:	    VEC4D_AGNER, VEC4F_AGNER, VEC8F_AGNER
+# AVX512:   VEC8D_AGNER, VEC16F_AGNER
+# Fallback: VEC4D_FALLBACK, VEC4F_FALLBACK, VEC8F_FALLBACK
+
+ifeq ($(DISTRIBUTION_FP_PRECISION),SPF)
+#Single-precision        
+	VECTORCLASS = VEC8F_AGNER
+else
+#Double-precision
+	VECTORCLASS = VEC4D_AGNER
+endif
+
+FLAGS =
+#CXXFLAGS = -I $(HOME)/include  -L $(HOME)/lib -g  -funroll-loops -std=c++0x -fopenmp -W -Wall -pedantic -Wno-unused -fabi-version=0 -mavx
+CXXFLAGS = -I $(HOME)/include  -L $(HOME)/lib -O3  -funroll-loops -std=c++0x -fopenmp -W -Wall -Wno-unused -fabi-version=0 -mavx -DPAPI_MEM
+MATHFLAGS = -ffast-math
+LDFLAGS = -L $(HOME)/lib
+LIB_MPI = -lgomp 
+
+
+#======== Libraries ===========
+
+INC_BOOST = -I/usr/include/boost/
+LIB_BOOST = -L/usr/lib/x86_64-linux-gnu/ -lboost_program_options
+
+INC_ZOLTAN = -I$(HOME)/vlasiator/libraries/zoltan/src/include
+LIB_ZOLTAN = -L$(HOME)/vlasiator/libraries/zoltan/build/src/ -lzoltan
+
+INC_VLSV = -I$(HOME)/vlasiator/libraries/vlsv
+LIB_VLSV = -L$(HOME)/vlasiator/libraries/vlsv -lvlsv
+
+INC_SILO = -I$(HOME)/vlasiator/libraries/include
+LIB_SILO = -L$(HOME)/vlasiator/libraries/lib -lsilo
+
+INC_DCCRG = -I$(HOME)/vlasiator/libraries/dccrg
+
+INC_FSGRID = -I$(HOME)/vlasiator/libraries/fsgrid
+
+INC_JEMALLOC = -I$(HOME)/vlasiator/libraries/jemalloc/include/jemalloc
+LIB_JEMALLOC = -L$(HOME)/vlasiator/libraries/jemalloc/lib -ljemalloc
+
+LIB_PROFILE = -L$(HOME)/vlasiator/libraries/phiprof/lib -lphiprof -Wl,-rpath=$(HOME)/vlasiator/libraries/phiprof/lib 
+INC_PROFILE = -I$(HOME)/vlasiator/libraries/phiprof/include
+
+INC_EIGEN = -I$(HOME)/vlasiator/libraries/
+
+INC_VECTORCLASS = -I$(HOME)/vlasiator/libraries/vectorclass/
+
+INC_ZFP = -I$(HOME)/vlasiator/compression/zfp/include -I$(HOME)/vlasiator/compression/zfp/array
+LIB_ZFP = -L$(HOME)/vlasiator/compression/zfp/lib -lzfp
+
+SZPATH = /home/local/jokahara/vlasiator/compression/sz
+INC_SZ = -I$(SZPATH)/include
+LIB_SZ = -I$(SZPATH)/include $(SZPATH)/lib/libSZ.a $(SZPATH)/lib/libzlib.a $(SZPATH)/lib/libzstd.a -lm -Wl,-rpath,$(SZPATH)/lib
+
+INC_PAPI =
+LIB_PAPI = -L$(HOME)/libraries/papi -lpapi
