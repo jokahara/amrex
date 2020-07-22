@@ -12,8 +12,8 @@
 #include <AMReX_BoxArray.H>
 #include <AMReX_Array.H>
 #include <AMReX_Vector.H>
-#include <AMReX_BCRec.H>
 
+#include "CellFabArray.h"
 #include "AmrLevel.h"
 
 /**
@@ -53,9 +53,14 @@ public:
 
     static void Initialize ();
     static void Finalize ();
+
+    void LoadBalance (Real time) {
+        LoadBalanceLevel0(time);
+    }
+
     //! AmrLevel lev.
     AmrLevel& getLevel (int lev) noexcept { return *amr_level[lev]; }
-    //! Array of AmrLevels.
+    AmrLevel& operator[] (int lev) { return *amr_level[lev]; }
     Vector<std::unique_ptr<AmrLevel> >& getAmrLevels () noexcept;
     //! Number of components.
     int nComp () noexcept { return n_comp; }

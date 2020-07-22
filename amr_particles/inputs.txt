@@ -1,16 +1,14 @@
-#max_step  = 1
-#stop_time = 2.0
 
 # PROBLEM SIZE & GEOMETRY
 geometry.is_periodic =  1  1  0
 geometry.coord_sys   =  0       # 0 => cartesian
 geometry.prob_lo     =  0.0  0.0  0.0 
-geometry.prob_hi     =  4.0  4.0  1.0
-amr.n_cell           =  4  4  1         # should be even in all directions
+geometry.prob_hi     =  10.0  10.0  1.0
+amr.n_cell           =  10  10  1         # should be even in all directions
 
 # default values
 n_comp               =  1     # number of components
-n_ghost              =  1     # number of ghost cells around fab array
+n_grow               =  1     # number of ghost cells around fab array
 
 # VERBOSITY
 amr.v               = 1       # verbosity in Amr
@@ -19,8 +17,9 @@ amr.v               = 1       # verbosity in Amr
 amr.max_level       = 0       # maximum level number allowed ( >= 0 )
 amr.ref_ratio       = 2 2 2 2 # refinement ratio (for each level)
 amr.blocking_factor = 1       # block factor in grid generation
-amr.max_grid_size   = 16      
+amr.max_grid_size   = 4      
 
 amr.regrid_int      = 2       # how often to regrid
 amr.n_error_buf     = 0       # buffer cells around each tagged cell
 
+amr.loadbalance_with_workestimates = 0

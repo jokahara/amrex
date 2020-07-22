@@ -99,25 +99,10 @@ public:
                           int       icomp,
                           int       ncomp,
 			              int       nghost = 0);
-    //! Function to set physical boundary conditions.
-    /*void setPhysBoundaryValues (CellFab& dest, Real     time,
-                                int      dest_comp,
-                                int      src_comp,
-                                int      num_comp);*/
                                         
     //! Data container.
-    CellFabArray& getData (Real time=0) noexcept { return state; }
+    CellFabArray& getData () noexcept { return state; }
 
-    //! Boundary condition access function.
-    /*Vector<int> getBCArray (int gridno,
-                            int icomp,
-                            int ncomp);*/
-    //! Hack to allow override of (non-fine-fine) fillpatched boundary data
-    /*void set_preferred_boundary_values (CellFabArray& S,
-                                        int       icomp,
-                                        int       dcomp,
-                                        int       ncomp,
-                                        Real      time) const;*/
     /** 
     * \brief called in grid_places after other tagging routines to modify
     * the list of tagged points.  Default implementation does nothing.
@@ -126,10 +111,10 @@ public:
                                 const Vector<IntVect>& bf_lev) {}
     /**
     * \brief Estimate the amount of work required to advance Just this level
-    * based on the number of cells.
-    * This estimate can be overwritten with different methods
+    * 
     */
-    virtual Real estimateWork();
+    virtual void estimateWork(MultiFab& mf) 
+        { state.EstimateWork(mf); }
 
     static void FillPatch (AmrLevel& AmrLevel,
                            CellFabArray& leveldata,

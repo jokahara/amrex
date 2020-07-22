@@ -38,14 +38,14 @@ using namespace std;
 using namespace boost;
 using namespace amrex;
 
-/*void update_cell_lists(CellArray &grid, Geometry &geom) {
+void update_cell_lists(CellFabArray &grid, Geometry &geom) {
 	
 	// move particles to the particle list of the cell the particles are currently inside of
 	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 		auto const& a = grid[mfi].array();
 		auto box = mfi.validbox();
 
-		LoopOnCpu(box, [&] (int i, int j, int k)
+		Loop(box, [&] (int i, int j, int k)
 		{
 			const IntVect cell(i,j,k);
 			auto *previous_data = &a(cell);
@@ -73,7 +73,7 @@ using namespace amrex;
 		auto const& a = grid[mfi].array();
 		auto box = mfi.validbox();
 
-		LoopOnCpu(box, [&] (int i, int j, int k)
+		Loop(box, [&] (int i, int j, int k)
 		{
 			const IntVect previous_cell(i,j,k);
 			auto *previous_data = &a(previous_cell);
@@ -95,14 +95,49 @@ using namespace amrex;
 		});
 	}
 }
-*/
+
+void printCounts(Amr& amr) 
+{
+	int total = 0;
+	for (int lev = 0; lev <= amr.maxLevel(); lev++)
+	{
+		AmrLevel &level = amr[lev];
+		CellFabArray& grid = level.getData();
+
+		//sleep(ParallelDescriptor::MyProc());
+		//AllPrint() << "rank: " << ParallelDescriptor::MyProc() << "\n";
+
+		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
+			const Box& box = mfi.validbox();
+			//AllPrint() << "  Box: " << box << " ";
+
+			auto a = grid[mfi].array();
+			int n = 0;
+			Loop(box, [&] (int i, int j, int k) 
+			{	
+				Cell* cell_data = &a(i,j,k);
+				 n+= cell_data->number_of_particles;
+			});
+
+			//AllPrint() << "has " << n << " particles\n";
+			total += n;
+			/*Real loc[3];
+			amr.Geom(lev).CellCenter(IntVect(box.loVect()), loc);
+			AllPrint() << "  Real low: " << loc[0] << " " << loc[1] << " " << loc[2] << ":\n"; 
+
+			amr.Geom(lev).CellCenter(IntVect(box.hiVect()), loc);
+			AllPrint() << "  Real high: " << loc[0] << " " << loc[1] << " " << loc[2] << ":\n"; */
+		}
+	}
+	AllPrint() << "rank " << ParallelDescriptor::MyProc() << " has " << total << " particles in total\n";
+}
 
 /*!
 Saves the local grid and its particles to separate vtk files.
 
 Each process saves its own files.
 */
-/*void save(const int rank, Amr &amr, unsigned int step)
+void save(const int rank, Amr &amr, unsigned int step)
 {
 	// write the grid
 	const string grid_file_name(
@@ -127,9 +162,9 @@ Each process saves its own files.
 
 	// calculate the total number local of particles
 	uint64_t total_particles = 0;
-	for (int lev = 0; lev <= amr.maxlevel(); lev++)
+	for (int lev = 0; lev <= amr.maxLevel(); lev++)
 	{
-		auto& grid = amr[lev];
+		auto& grid = amr[lev].getData();
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 			auto const& a = grid[mfi].array();
 			For(mfi.validbox(), [&] (int i, int j, int k)
@@ -143,9 +178,9 @@ Each process saves its own files.
 	// write out coordinates
 	uint64_t written_particles = 0;
 	
-	for (int lev = 0; lev <= amr.maxlevel(); lev++)
+	for (int lev = 0; lev <= amr.maxLevel(); lev++)
 	{
-		auto& grid = amr[lev];
+		auto& grid = amr[lev].getData();
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 			auto const& a = grid[mfi].array();
 			For(mfi.validbox(), [&] (int i, int j, int k)
@@ -188,9 +223,9 @@ Each process saves its own files.
 	}
 
 	outfile << "\nSCALARS lev int 1\nLOOKUP_TABLE default\n";
-	for (int lev = 0; lev <= amr.maxlev(); lev++)
+	for (int lev = 0; lev <= amr.maxLevel(); lev++)
 	{
-		auto& grid = amr[lev];
+		auto& grid = amr[lev].getData();
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 			auto const& a = grid[mfi].array();
 			For(mfi.validbox(), [&] (int i, int j, int k) {
@@ -204,9 +239,9 @@ Each process saves its own files.
 
 	// cell numbers of particles
 	outfile << "\nSCALARS cell int 1\nLOOKUP_TABLE default\n";
-	for (int lev = 0; lev <= amr.maxlev(); lev++)
+	for (int lev = 0; lev <= amr.maxLevel(); lev++)
 	{
-		auto& grid = amr[lev];
+		auto& grid = amr[lev].getData();
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 			auto const& a = grid[mfi].array();
 			For(mfi.validbox(), [&] (int i, int j, int k) {
@@ -222,7 +257,7 @@ Each process saves its own files.
 
 	outfile.close();
 }
-*/
+
 
 int main_main()
 {
@@ -231,60 +266,45 @@ int main_main()
 
 	int rank = ParallelDescriptor::MyProc();
 	int comm_size = ParallelDescriptor::NProcs();
-	amrex::Print() << "   Running " << comm_size << " processes\n";
-	amrex::AllPrint() << rank << "\n";
+	amrex::Print() << "Running " << comm_size << " processes\n";
 	
 	Amr amr;
 	amrex::Print() << "   Domain: " << amr.Geom(0).Domain().size() << "\n";
 	amr.init();
 
-	for (int lev = 0; lev <= amr.maxLevel(); lev++)
+	Print() << "Level " << 0 << " has " << amr[0].countCells() << " cells\n"; 
+
+	// Init particles
 	{
-		CellFabArray& grid = amr.getLevel(lev).getData();
+		CellFabArray& grid = amr[0].getData();
 
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
 			const Box& box = mfi.validbox();
 			auto a = grid[mfi].array();
 			int n = 0;
-			LoopOnCpu(box, [&] (int i, int j, int k) 
+			Loop(box, [&] (int i, int j, int k) 
 			{
-				a(i,j,k).number_of_particles = i*j;
+				Cell* cell_data = &a(i,j,k);
+				const unsigned int number_of_particles = 1 + i*j;
+					//= (unsigned int)ceil(max_particles_per_cell * double(rand()) / RAND_MAX);
+				for (unsigned int n = 0; n < number_of_particles; n++) {
+					std::array<double, 3> coordinates = {{
+						i + double(rand()) / RAND_MAX,
+						j + double(rand()) / RAND_MAX,
+						k + double(rand()) / RAND_MAX
+					}};
+
+					cell_data->particles.push_back(coordinates);
+					cell_data->number_of_particles = cell_data->particles.size();
+				}
+				
 			});
 		}
 
 		Cell::transfer_particles = false;
-		grid.FillBoundary(amr.Geom(lev).periodicity());
+		grid.FillBoundary(amr.Geom(0).periodicity());
 	}
-	
-	for (int lev = 0; lev <= amr.maxLevel(); lev++)
-	{
-		AmrLevel &level = amr.getLevel(0);
-		Print() << "lev " << lev << " has " << level.countCells() << " cells\n"; 
-		
-		CellFabArray& grid = level.getData();
- 		Print() << "   Nghost: " << grid.nGrowVect() << ", Ncomp: " << grid.nComp() << "\n";
-
-		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
-			const Box& box = mfi.validbox();
-			AllPrint()<< "  Box: " << box << " ";
-			auto a = grid[mfi].array();
-			int n = 0;
-			LoopOnCpu(box, [&] (int i, int j, int k) 
-			{	
-				n += a(i,j,k).number_of_particles;
-			});
-
-			AllPrint() << "has " << n << " particles\n";
-
-			/*Real loc[3];
-			amr.Geom(lev).CellCenter(IntVect(box.loVect()), loc);
-			AllPrint() << "  Real low: " << loc[0] << " " << loc[1] << " " << loc[2] << ":\n"; 
-
-			amr.Geom(lev).CellCenter(IntVect(box.hiVect()), loc);
-			AllPrint() << "  Real high: " << loc[0] << " " << loc[1] << " " << loc[2] << ":\n"; */
-		}
-	}
-	
+	printCounts(amr);
 	
 	/*
 	Visualize the results for example with visit -o simple_particles.visit
@@ -302,7 +322,8 @@ int main_main()
 		visit_grid << "!NBLOCKS " << comm_size << "\n";
 	}
 	
-	/*const unsigned int max_steps = 1;
+
+	const unsigned int max_steps = 50;
 	for (unsigned int step = 0; step < max_steps; step++) {
 		// append current output file names to the visit files
 		if (rank == 0) {
@@ -315,21 +336,23 @@ int main_main()
 					<< step << "_grid.vtk\n";
 			}
 		}
-
+		
+		if (step % 10 == 0) amr.LoadBalance(step);
+		
 		save(rank, amr, step);
 
 		const double vx = 0.1;
 
-		auto &grid = amr[0];
-		int Ncomp = grid.nComp();
+		int Ncomp = amr.nComp();
 		Geometry &geom = amr.Geom(0);
+		CellFabArray& grid = amr[0].getData();
 		// move particles in x-direction
 		for (MFIter mfi(grid); mfi.isValid(); ++mfi) { // loop over local boxes
 			auto const& a = grid[mfi].array();
 			auto box = mfi.validbox();
 			
 			// loop over cells
-			LoopOnCpu(box, [&] (int i, int j, int k) 
+			Loop(box, [&] (int i, int j, int k) 
 			{	
 				// loop over particles
 				for (int n = 0; n < a(i,j,k).particles.size(); n++) 
@@ -348,10 +371,10 @@ int main_main()
 		// update particle counts between neighboring cells
 		Cell::transfer_particles = false;
 		grid.FillBoundary(geom.periodicity(), true); // cross=true to not fill corners
-		//ParallelDescriptor::Barrier();
 
-		// resize ghost cells (not working currently with MPI)
-    	const auto receiveTags = *grid.getFB(grid.nGrowVect(), geom.periodicity(), true, false).m_RcvTags;
+		// get tags to cells which received data from remote cells
+    	const auto& receiveTags = grid.get_receive_tags();
+		// resize ghost cells 
     	for (auto const& kv : receiveTags)
 		{
 			for (auto const& tag : kv.second)
@@ -362,7 +385,7 @@ int main_main()
 				[&] (int ii, int jj, int kk, int n) noexcept
 				{
 					const IntVect idx = IntVect(ii,jj,kk);
-					dfab(idx, n).resize(); // resizing
+					dfab(idx, n).resize();
 				});
 			}
 		}
@@ -373,7 +396,7 @@ int main_main()
 
 		update_cell_lists(grid, geom);
 	}
-
+	printCounts(amr);
 	// append final output file names to the visit files
 	if (rank == 0) {
 		for (int i = 0; i < comm_size; i++) {
@@ -388,7 +411,7 @@ int main_main()
 		visit_grid.close();
 	}
 
-	save(rank, amr, max_steps);*/
+	save(rank, amr, max_steps);
 
 	clock_t after = clock();
 	Print() << "Finalizing"

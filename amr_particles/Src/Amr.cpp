@@ -336,17 +336,16 @@ Amr::init (const BoxArray* lev0_grids, const Vector<int>* pmap)
     ParmParse pp;
 
     n_comp = 1;
-    n_grow = {1,1,1};
-
     pp.query("n_comp", n_comp);
-    pp.query("n_grow", n_grow);
+
+    int grow = 1;
+    pp.query("n_grow", grow);
+    n_grow = {grow, grow, grow};
 
     if (check_input) checkInput();
     
     // Generate internal values from user-supplied values.
     finest_level = 0;
-    // Init problem dependent data.
-    int linit = true;
 
     // Define base level grids.
     defBaseLevel(0, lev0_grids, pmap);
@@ -447,6 +446,7 @@ Amr::defBaseLevel (Real              strt_time,
     }
     else
     {
+        Print() << "    MakeBaseGrids\n";
 	    lev0 = MakeBaseGrids();
     }
 
@@ -560,25 +560,15 @@ Amr::makeLoadBalanceDistributionMap (int lev, Real time, const BoxArray& ba) con
         } else {
             dmtmp.define(ba);
         }
-
+        amrex::Print() << "    Calculate work estimates\n";
         // TODO: Fill multifab with weights for dist mapping
         MultiFab workest(ba, dmtmp, 1, 0, MFInfo(), FArrayBoxFactory());
-        for (MFIter mfi(workest); mfi.isValid(); ++mfi) {
-            auto a = workest[mfi].array();
-            auto box = mfi.validbox();
+        amr_level[lev]->estimateWork(workest);
 
-            Real work = 1; 
-            /*ParallelFor(box, [&] (int i, int j, int k, int n)
-            {
-                a(i,j,k) = work; //amr_level[lev]->estimateWork();
+        //Real navg = static_cast<Real>(ba.size()) / static_cast<Real>(ParallelDescriptor::NProcs());
+        //int nmax = static_cast<int>(std::max(std::round(loadbalance_max_fac*navg), std::ceil(navg)));
 
-            });*/
-        }
-
-        Real navg = static_cast<Real>(ba.size()) / static_cast<Real>(ParallelDescriptor::NProcs());
-        int nmax = static_cast<int>(std::max(std::round(loadbalance_max_fac*navg), std::ceil(navg)));
-
-        newdm = DistributionMapping::makeKnapSack(workest, nmax);
+        newdm = DistributionMapping::makeKnapSack(workest);
     }
     else
     {
@@ -606,9 +596,18 @@ Amr::InstallNewDistributionMap (int lev, const DistributionMapping& newdm)
 
     AmrLevel* old = amr_level[lev].get();
 
-    CellFabArray& S_new = a->getData();
-    a->FillPatch(*old, S_new, 0, 0, 0, S_new.nComp());
+    CellFabArray& S_new = a->getData(); // should be already defined
 
+    if (lev == 0)
+    {
+        Print() << "    FillFromLevel0\n";
+        // TODO: maybe move this to FillPatch later
+        S_new.FillPatchSingleLevel({0,0,0}, old->getData(), 0, 0, nComp(), Geom(lev));
+    } else
+    {
+        AmrLevel::FillPatch(*old, S_new, 0, 0, 0, S_new.nComp()); // Fill S_new with data in old
+    }
+    
     amr_level[lev].reset(a);
 
     this->SetBoxArray(lev, amr_level[lev]->boxArray());
@@ -665,12 +664,13 @@ Amr::grid_places (int              lbase,
                   Vector<BoxArray>& new_grids)
 {
     BL_PROFILE("Amr::grid_places()");
+    Print() << "    grid_places\n";
 
     const Real strttime = amrex::second();
 
-    if (lbase == 0)
-    {
-	new_grids[0] = MakeBaseGrids();
+    if (lbase == 0) {
+        Print() << "    MakeBaseGrids\n";
+	    new_grids[0] = MakeBaseGrids();
     }
 
     if ( time == 0. && !initial_grids_file.empty() && !use_fixed_coarse_grids)
@@ -736,7 +736,8 @@ Amr::grid_places (int              lbase,
         }
         return;
     }
-
+    
+    Print() << "    MakeNewGrids\n";
     MakeNewGrids(lbase, time, new_finest, new_grids);
 
     if (verbose > 0)
@@ -806,9 +807,7 @@ Amr::bldFineLevels (Real strt_time)
     if ( regrid_grids_file.empty() || (strt_time == 0.0 && !initial_grids_file.empty()) )  
     {
         bool grids_the_same;
-
         const int MaxCnt = 4;
-
         int count = 0;
 
         do

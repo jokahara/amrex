@@ -1,58 +1,11 @@
 
 #include "CellFabArray.h"
 
-/*void CellFabArray::Swap (CellFabArray& dst, CellFabArray& src,
-           int srccomp, int dstcomp, int numcomp, const IntVect& nghost)
-{
-    BL_ASSERT(dst.boxArray() == src.boxArray());
-    BL_ASSERT(dst.distributionMap == src.distributionMap);
-    BL_ASSERT(dst.nGrowVect().allGE(nghost) and src.nGrowVect().allGE(nghost));
-
-    BL_PROFILE("CellFabArray::Swap()");
-
-    // We can take a shortcut and do a std::swap if we're swapping all of the data
-    // and they are allocated in the same Arena.
-
-    bool explicit_swap = true;
-
-    if (srccomp == dstcomp && dstcomp == 0 && src.nComp() == dst.nComp() &&
-        src.nGrowVect() == nghost && src.nGrowVect() == dst.nGrowVect()) {
-        explicit_swap = false;
-    }
-
-    if (!explicit_swap) {
-
-        std::swap(dst, src);
-
-    } else {
-        Print() << "WARNING: Using explicit_swap!\n";
-#ifdef _OPENMP
-#pragma omp parallel if (Gpu::notInLaunchRegion())
-#endif
-        for (MFIter mfi(dst,TilingIfNotGPU()); mfi.isValid(); ++mfi)
-        {
-            const Box& bx = mfi.growntilebox(nghost);
-            if (bx.ok()) {
-                auto sfab = src.array(mfi);
-                auto dfab = dst.array(mfi);
-                AMREX_HOST_DEVICE_PARALLEL_FOR_4D ( bx, numcomp, i, j, k, n,
-                {
-                    const Cell tmp        = dfab(i,j,k,n+dstcomp);
-                    dfab(i,j,k,n+dstcomp) = sfab(i,j,k,n+srccomp);
-                    sfab(i,j,k,n+srccomp) = tmp;
-                });
-            }
-        }
-    }
-}*/
-
 void
 CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
-                                    const Periodicity& period, bool cross 
-                                    /*,bool enforce_periodicity_only*/)
+                                    const Periodicity& period, bool cross, 
+                                    bool enforce_periodicity_only)
 {
-    bool enforce_periodicity_only = false;
-
     fb_cross = cross;
     fb_epo   = enforce_periodicity_only;
     fb_scomp = scomp;
@@ -107,10 +60,11 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
     const int N_rcvs = TheFB.m_RcvTags->size();
     const int N_snds = TheFB.m_SndTags->size();
 
-    if (N_locs == 0 && N_rcvs == 0 && N_snds == 0)
+    if (N_locs == 0 && N_rcvs == 0 && N_snds == 0) {
         // No work to do.
         return;
-
+    }
+    
     // Post receives
     if (N_rcvs > 0) {
         PostReceives(*TheFB.m_RcvTags, fb_send_reqs,
@@ -186,7 +140,6 @@ CellFabArray::PostSends (const MapOfCopyComTagContainers& m_SndTags,
             const Box& bx = tag.sbox;
             auto sfab = this->array(tag.srcIndex);
             
-            // TEST: LoopConcurrentOnCpu or for(cell: numPts)
             amrex::Loop( bx, ncomp,
             [&] (int ii, int jj, int kk, int n) noexcept
             {
@@ -237,7 +190,7 @@ CellFabArray::PostSends (const MapOfCopyComTagContainers& m_SndTags,
 void
 CellFabArray::PostReceives (const MapOfCopyComTagContainers& m_RcvTags, 
                             Vector<MPI_Request>& recv_reqs,
-                            int icomp, int ncomp, int SeqNum)
+                            int icomp, int ncomp, int SeqNum) 
 {
 
     Vector<int>&                        recv_from = fb_recv_from;
@@ -335,14 +288,11 @@ CellFabArray::FillBoundary_finish ()
 
     if ( n_grow.allLE(IntVect::TheZeroVector()) && !fb_epo ) return; // For epo (Enforce Periodicity Only), there may be no ghost cells.
 
-    n_filled = fb_nghost;
-
     if (ParallelContext::NProcsSub() == 1) return;
 
 #ifdef AMREX_USE_MPI
-
-    const FB& TheFB = getFB(fb_nghost,fb_period,fb_cross,fb_epo);
-    const int N_rcvs = TheFB.m_RcvTags->size();
+    //const FB& TheFB = getFB(fb_nghost,fb_period,fb_cross,fb_epo);
+    const int N_rcvs = get_receive_tags().size();
     if (N_rcvs > 0)
     {
         fb_recv_stat.resize(N_rcvs);
@@ -350,7 +300,7 @@ CellFabArray::FillBoundary_finish ()
         // equivalent to ParallelDescriptor::Waitall(fb_recv_reqs, fb_recv_stat);
     }
     
-    const int N_snds = TheFB.m_SndTags->size();
+    const int N_snds = get_send_tags().size();
     if (N_snds > 0) 
     {
         Vector<MPI_Status> stats(N_snds);
@@ -370,9 +320,9 @@ CellFabArray::FB_local_copy_cpu (const FB& TheFB, int scomp, int ncomp)
     bool is_thread_safe = TheFB.m_threadsafe_loc;
     if (is_thread_safe)
     {
-/*#ifdef _OPENMP
+#ifdef _OPENMP
 #pragma omp parallel for
-#endif*/
+#endif
         for (int i = 0; i < N_locs; ++i)
         {
             const CopyComTag& tag = LocTags[i];
@@ -414,7 +364,7 @@ CellFabArray::FB_local_copy_cpu (const FB& TheFB, int scomp, int ncomp)
 }
 
 void 
-CellFabArray::ParallelCopy (const CellFabArray& src,
+CellFabArray::ParallelCopy (CellFabArray& src,
                             int scomp, int dcomp, int ncomp,
                             const IntVect& snghost, const IntVect& dnghost,
                             const Periodicity& period,
@@ -422,7 +372,6 @@ CellFabArray::ParallelCopy (const CellFabArray& src,
                             const FabArrayBase::CPC* a_cpc)
 {
     BL_PROFILE("FabArray::ParallelCopy()");
-    amrex::Print() << "Warning: Calling ParallelCopy()\n";
 
     if (size() == 0 || src.size() == 0) return;
 
@@ -520,7 +469,7 @@ CellFabArray::ParallelCopy (const CellFabArray& src,
 
         // Post send's
         if (N_snds > 0) {
-            PostSends(*thecpc.m_SndTags, send_reqs, SC, NC, SeqNum);
+            src.PostSends(*thecpc.m_SndTags, send_reqs, SC, NC, SeqNum);
         }
 
         // Do the local work.  Hope for a bit of communication/computation overlap.
@@ -610,7 +559,8 @@ CellFabArray::PC_local_cpu (const CPC& thecpc, CellFabArray const& src,
         {
             const auto& tags = loc_copy_tags[mfi];
             auto dfab = this->array(mfi);
-            if (op == FabArrayBase::COPY)
+            
+            if (op == FabArrayBase::COPY) // whether to copy or add data 
             {
                 for (auto const & tag : tags)
                 {

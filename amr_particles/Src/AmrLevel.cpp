@@ -153,12 +153,6 @@ AmrLevel::FillCoarsePatch (CellFabArray& mf,
     }   
 }
 
-Real
-AmrLevel::estimateWork ()
-{
-    return 1.0*countCells();
-}
-
 const BoxArray& AmrLevel::getAreaNotToTag () noexcept
 {
     return m_AreaNotToTag;
@@ -335,6 +329,7 @@ FillPatchIterator::Initialize (int  boxGrow,
                 }
             }
 
+            Print() << "    FillPatchIteratorHelper\n";
             // This initialization sends all data needed by fill
             FillPatchIteratorHelper* fph = 0;
             fph = new FillPatchIteratorHelper(m_Amrlevel, m_leveldata, boxGrow, time, icomp, ncomp);
@@ -360,19 +355,22 @@ FillPatchIterator::Initialize (int  boxGrow,
 void
 FillPatchIterator::FillFromLevel0 (Real time, int icomp, int ncomp)
 {
+    Print() << "    FillFromLevel0\n";
     BL_ASSERT(m_Amrlevel.level == 0);
 
-    CellFabArray& smf = m_Amrlevel.state;
-    smf.FillBoundary();
+    CellFabArray& src = m_Amrlevel.state;
+    //src.FillBoundary();
 
     const Geometry& geom = m_Amrlevel.geom;
 
+    m_fabs.FillPatchSingleLevel(src, icomp, icomp, ncomp, geom);
     //amrex::FillPatchSingleLevel (m_fabs, time, smf, stime, icomp, ncomp, geom, physbcf, icomp);
 }
 
 void
 FillPatchIterator::FillFromTwoLevels (Real time, int icomp, int ncomp)
 {
+    Print() << "    FillFromTwoLevels\n";
     int ilev_fine = m_Amrlevel.level;
     int ilev_crse = ilev_fine-1;
 
@@ -385,10 +383,10 @@ FillPatchIterator::FillFromTwoLevels (Real time, int icomp, int ncomp)
     const Geometry& geom_crse = crse_level.geom;
     
     CellFabArray& smf_crse = crse_level.state;
-    smf_crse.FillBoundary();
+    //smf_crse.FillBoundary();
 
     CellFabArray& smf_fine = fine_level.state;
-    smf_fine.FillBoundary();
+    //smf_fine.FillBoundary();
 
     //m_fabs.FillPatchTwoLevels
 }
@@ -453,9 +451,8 @@ FillPatchIteratorHelper::Initialize (int  boxGrow,
     Vector<Box>     crse_boxes;
     Vector<IntVect> pshifts(27);
 
-    for (std::map<int,Box>::const_iterator it = m_ba.begin(), End = m_ba.end();
-         it != End;
-         ++it)
+    for (std::map<int,Box>::const_iterator it = m_ba.begin(), 
+         End = m_ba.end(); it != End; ++it)
     {
         const int  bxidx = it->first;
         const Box& box   = it->second;
@@ -506,7 +503,7 @@ FillPatchIteratorHelper::Initialize (int  boxGrow,
             }
         }
 
-	// cells outside physical boundaries are not included in unfilledThisLevel
+	    // cells outside physical boundaries are not included in unfilledThisLevel
 
         bool Done = false;
 
@@ -797,7 +794,8 @@ AmrLevel::FillPatch (AmrLevel&  Amrlevel,
                      int        ncomp)
 {
     BL_ASSERT(boxGrow <= leveldata.nGrow());
-    
+    Print() << "Filling Patch with FillPatchIterator\n";
+    // fill leveldata with data from Amrlevel
     FillPatchIterator fpi(Amrlevel, leveldata, boxGrow, time, icomp, ncomp);
     const CellFabArray& mf_fillpatched = fpi.get_mf();
     amrex::Copy(leveldata, mf_fillpatched, icomp, icomp, ncomp, boxGrow);

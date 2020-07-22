@@ -3,6 +3,7 @@
 
 #include <AMReX_FabArray.H>
 #include <AMReX_FabFactory.H>
+#include <AMReX_MultiFab.H>
 #include <AMReX_Periodicity.H>
 #include "Cell.h"
 
@@ -61,18 +62,27 @@ public:
 
     CellFabArray (const CellFabArray& rhs) = delete;
     CellFabArray& operator= (const CellFabArray& rhs) = delete;
-
-    /**
-    * \brief Swap from src to dst including nghost ghost cells.
-    * The two CellFabArrays MUST have the same underlying BoxArray.
-    * The swap is local.
-    */
-    /*static void Swap (CellFabArray& dst, CellFabArray& src,
-                      int srccomp, int dstcomp, int numcomp, int nghost)
-    { Swap(dst,src,srccomp,dstcomp,numcomp,IntVect(nghost)); }
     
-    static void Swap (CellFabArray& dst, CellFabArray& src,
-                      int srccomp, int dstcomp, int numcomp, const IntVect& nghost);*/
+    void EstimateWork (MultiFab& mf);
+
+    /** 
+     * Returns a map of tags pointing to boxes which receive data 
+     * from remote neighbours during FillBoundary
+    */
+    const MapOfCopyComTagContainers& get_receive_tags() {
+        const FB& theFB = *m_TheFBCache.find(getBDKey())->second;
+        return *theFB.m_RcvTags;
+    }
+
+    const MapOfCopyComTagContainers& get_send_tags() {
+        const FB& theFB = *m_TheFBCache.find(getBDKey())->second;
+        return *theFB.m_SndTags;
+    }
+
+    const CopyComTagsContainer& get_local_tags() {
+        const FB& theFB = *m_TheFBCache.find(getBDKey())->second;
+        return *theFB.m_LocTags;
+    }
 
     // Fills ghost cells of this CellFabArray
     void FillBoundary (bool cross = false);
@@ -82,52 +92,57 @@ public:
     //! Same as FillBoundary(), but only copies ncomp components starting at scomp.
     void FillBoundary (int scomp, int ncomp, bool cross = false);
     void FillBoundary (int scomp, int ncomp, const Periodicity& period, bool cross = false);
-    void FillBoundary (int scomp, int ncomp, const IntVect& nghost, const Periodicity& period, bool cross = false);
+    void FillBoundary (int scomp, int ncomp, const IntVect& nghost, const Periodicity& period, 
+                       bool cross=false, bool enforce_periodicity_only=false);
 
     void FillBoundary_nowait (bool cross = false);
     void FillBoundary_nowait (const Periodicity& period, bool cross = false);
     void FillBoundary_nowait (int scomp, int ncomp, bool cross = false);
     void FillBoundary_nowait (int scomp, int ncomp, const Periodicity& period, bool cross = false);
-    void FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost, const Periodicity& period, bool cross = false);
+    void FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost, const Periodicity& period, 
+                              bool cross=false, bool enforce_periodicity_only=false);
     void FillBoundary_finish ();
 
-    // Copies from data from src to this CellFabArray (needed for AMR)
-    void ParallelCopy (const CellFabArray& src,
-                       int src_comp, int dest_comp, int num_comp,
-                       const Periodicity& period = Periodicity::NonPeriodic(),
-                       CpOp op = FabArrayBase::COPY)
-    { ParallelCopy(src,src_comp,dest_comp,num_comp,0,0,period,op); }
+    // Copies from data from src to this CellFabArray
+    inline void ParallelCopy (CellFabArray& src,
+                        int src_comp, int dest_comp, int num_comp,
+                        const Periodicity& period = Periodicity::NonPeriodic(),
+                        CpOp op = FabArrayBase::COPY,
+                        const FabArrayBase::CPC* a_cpc = nullptr)
+    { ParallelCopy(src,src_comp,dest_comp,num_comp,0,0,period,op,a_cpc); }
 
-    void ParallelCopy (const CellFabArray& src,
+    inline void ParallelCopy (CellFabArray& src,
                         int src_comp, int dest_comp, int num_comp,
                         int src_nghost, int dst_nghost,
                         const Periodicity& period = Periodicity::NonPeriodic(),
-                        CpOp op = FabArrayBase::COPY)
-    { ParallelCopy(src,src_comp,dest_comp,num_comp,IntVect(src_nghost),IntVect(dst_nghost),period,op); }
+                        CpOp op = FabArrayBase::COPY,
+                        const FabArrayBase::CPC* a_cpc = nullptr)
+    { ParallelCopy(src,src_comp,dest_comp,num_comp,IntVect(src_nghost),IntVect(dst_nghost),period,op,a_cpc); }
 
-    void ParallelCopy (const CellFabArray& src,
+    void ParallelCopy (CellFabArray& src,
                         int src_comp, int dest_comp, int num_comp,
                         const IntVect& src_nghost, const IntVect& dst_nghost,
                         const Periodicity& period = Periodicity::NonPeriodic(),
                         CpOp op = FabArrayBase::COPY,
                         const FabArrayBase::CPC* a_cpc = nullptr);
 
-    void FillPatchSingleLevel (const CellFabArray& src,
+    inline void FillPatchSingleLevel (CellFabArray& src,
                                int scomp, int dcomp, int ncomp,
                                const Geometry& geom)
     { FillPatchSingleLevel(nGrowVect(), src, scomp, dcomp, ncomp, geom); }
 
     void FillPatchSingleLevel (amrex::IntVect const& nghost,
-                               const CellFabArray& src,
+                               CellFabArray& src,
                                int scomp, int dcomp, int ncomp,
                                const Geometry& geom);
 
-    void FillPatchTwoLevels (const CellFabArray& coarse, const CellFabArray& fine, 
+    void FillPatchTwoLevels (CellFabArray& coarse, CellFabArray& fine, 
                              int scomp, int dcomp, int ncomp,
                              const Geometry& cgeom, const Geometry& fgeom,
                              const IntVect& ratio);
 
 private:
+    typedef FabArrayBase::CopyComTagsContainer CopyComTagsContainer;
     typedef CopyComTag::MapOfCopyComTagContainers MapOfCopyComTagContainers;
 
     #ifdef BL_USE_MPI
@@ -145,70 +160,79 @@ private:
 
     void PC_local_cpu (const CPC& thecpc, CellFabArray const& src,
                         int scomp, int dcomp, int ncomp, CpOp op);
+
 };
+
+
+inline void
+CellFabArray::EstimateWork (MultiFab& mf) 
+{
+    for (MFIter mfi(mf); mfi.isValid(); ++mfi) {
+        auto& mfab = mf[mfi];
+        auto& sfab = get(mfi);
+        auto box = mfi.validbox();
+
+        ParallelFor(box, [&] (int i, int j, int k)
+        {
+            IntVect idx{i,j,k};
+            mfab(idx) = sfab(idx).number_of_particles;
+        });
+    }
+}
 
 inline void
 CellFabArray::FillBoundary (bool cross)
 {
-    BL_PROFILE("FabArray::FillBoundary()");
     if ( n_grow.max() > 0 ) {
-	FillBoundary_nowait(0, nComp(), n_grow, Periodicity::NonPeriodic(), cross);
-	FillBoundary_finish();
+        FillBoundary_nowait(0, nComp(), n_grow, Periodicity::NonPeriodic(), cross);
+        FillBoundary_finish();
     }
 }
 
 inline void
 CellFabArray::FillBoundary (const Periodicity& period, bool cross)
 {
-    BL_PROFILE("FabArray::FillBoundary()");
     if ( n_grow.max() > 0 ) {
-	FillBoundary_nowait(0, nComp(), n_grow, period, cross);
-	FillBoundary_finish();
+        FillBoundary_nowait(0, nComp(), n_grow, period, cross);
+        FillBoundary_finish();
     }
 }
 
 inline void
 CellFabArray::FillBoundary (const IntVect& nghost, const Periodicity& period, bool cross)
 {
-    BL_PROFILE("FabArray::FillBoundary()");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(nghost.allLE(nGrowVect()),
-                                     "FillBoundary: asked to fill more ghost cells than we have");
     if ( nghost.max() > 0 ) {
-	FillBoundary_nowait(0, nComp(), nghost, period, cross);
-	FillBoundary_finish();
+        FillBoundary_nowait(0, nComp(), nghost, period, cross);
+        FillBoundary_finish();
     }
 }
 
 inline void
 CellFabArray::FillBoundary (int scomp, int ncomp, bool cross)
 {
-    BL_PROFILE("FabArray::FillBoundary()");
     if ( n_grow.max() > 0 ) {
-	FillBoundary_nowait(scomp, ncomp, n_grow, Periodicity::NonPeriodic(), cross);
-	FillBoundary_finish();
+        FillBoundary_nowait(scomp, ncomp, n_grow, Periodicity::NonPeriodic(), cross);
+        FillBoundary_finish();
     }
 }
 
 inline void
 CellFabArray::FillBoundary (int scomp, int ncomp, const Periodicity& period, bool cross)
 {
-    BL_PROFILE("FabArray::FillBoundary()");
     if ( n_grow.max() > 0 ) {
-	FillBoundary_nowait(scomp, ncomp, n_grow, period, cross);
-	FillBoundary_finish();
+        FillBoundary_nowait(scomp, ncomp, n_grow, period, cross);
+        FillBoundary_finish();
     }
 }
 
 inline void
 CellFabArray::FillBoundary (int scomp, int ncomp, const IntVect& nghost,
-                             const Periodicity& period, bool cross)
+                            const Periodicity& period, bool cross,
+                            bool enforce_periodicity_only)
 {
-    BL_PROFILE("FabArray::FillBoundary()");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(nghost.allLE(nGrowVect()),
-                                     "FillBoundary: asked to fill more ghost cells than we have");
     if ( nghost.max() > 0 ) {
-	FillBoundary_nowait(scomp, ncomp, nghost, period, cross);
-	FillBoundary_finish();
+        FillBoundary_nowait(scomp, ncomp, nghost, period, cross, enforce_periodicity_only);
+        FillBoundary_finish();
     }
 }
 
@@ -236,24 +260,69 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const Periodicity& peri
     FillBoundary_nowait(scomp, ncomp, nGrowVect(), period, cross);
 }
 
+// Fill this with data from src
 inline void
 CellFabArray::FillPatchSingleLevel (amrex::IntVect const& nghost,
-                                    const CellFabArray& src,
+                                    CellFabArray& src,
                                     int scomp, int dcomp, int ncomp,
                                     const Geometry& geom)
 {
     BL_PROFILE("FillPatchSingleLevel");
 
-    if (this == &src and scomp == dcomp) {
-        FillBoundary(dcomp, ncomp, nghost, geom.periodicity());
-    } else {
-        ParallelCopy(src, scomp, dcomp, ncomp, IntVect{0}, nghost, geom.periodicity());
+    Periodicity period = geom.periodicity();
+    
+    if (this != &src or scomp != dcomp) {
+        // tags for cells which are moved / copied
+        // ghost cells are ignored for now
+        const CPC& cpc = getCPC({0,0,0}, src, {0,0,0}, period);   
+
+        Cell::transfer_particles = false;
+        ParallelCopy(src, scomp, dcomp, ncomp, period, FabArrayBase::COPY, &cpc);
+
+        // resizing receiving cells
+        for (auto const& kv : *cpc.m_RcvTags)
+        {
+            for (auto const& tag : kv.second)
+            {
+                const auto& bx = tag.dbox;
+                auto dfab = this->array(tag.dstIndex);
+                amrex::Loop( bx, ncomp,
+                [&] (int ii, int jj, int kk, int n) noexcept
+                {
+                    const IntVect idx{ii,jj,kk};
+                    dfab(idx, n+dcomp).resize();
+                });
+            }
+        }
+
+        Cell::transfer_particles = true;
+        ParallelCopy(src, scomp, dcomp, ncomp, period, FabArrayBase::COPY, &cpc);
     }
-    // Boundary conditions need to applied separately
+
+    // Finishing by filling ghost cells
+    Cell::transfer_particles = false;
+    FillBoundary(dcomp, ncomp, n_grow, period);
+
+    for (auto const& kv : get_receive_tags())
+    {
+        for (auto const& tag : kv.second)
+        {
+            const auto& bx = tag.dbox;
+            auto dfab = this->array(tag.dstIndex);
+            amrex::Loop( bx, ncomp,
+            [&] (int ii, int jj, int kk, int n) noexcept
+            {
+                dfab(ii, jj, kk, n+dcomp).resize();
+            });
+        }
+    }
+
+    Cell::transfer_particles = true;
+    FillBoundary(dcomp, ncomp, n_grow, period);
 }
 
 inline void
-CellFabArray::FillPatchTwoLevels (const CellFabArray& coarse, const CellFabArray& fine, 
+CellFabArray::FillPatchTwoLevels (CellFabArray& coarse, CellFabArray& fine, 
                                   int scomp, int dcomp, int ncomp,
                                   const Geometry& cgeom, const Geometry& fgeom,
                                   const IntVect& ratio)
@@ -284,7 +353,6 @@ CellFabArray::FillPatchTwoLevels (const CellFabArray& coarse, const CellFabArray
 	    if ( ! fpc.ba_crse_patch.empty())
 	    {
             CellFabArray coarse_patch = make_mf_crse_patch<CellFabArray>(fpc, ncomp);
-            //amrex::mf_set_domain_bndry(coarse_patch, cgeom);
 
             FillPatchSingleLevel(coarse_patch, cmf, scomp, 0, ncomp, cgeom);
 
