@@ -313,6 +313,8 @@ CellFabArray::FillBoundary_finish ()
 void
 CellFabArray::FB_local_copy_cpu (const FB& TheFB, int scomp, int ncomp)
 {
+    if(!Cell::transfer_particles) return;
+
     auto const& LocTags = *(TheFB.m_LocTags);
     int N_locs = LocTags.size();
     if (N_locs == 0) return;
@@ -428,7 +430,8 @@ CellFabArray::ParallelCopy (CellFabArray& src,
         else
 #endif
         {
-            PC_local_cpu(thecpc, src, scomp, dcomp, ncomp, op);
+            //PC_local_cpu(thecpc, src, scomp, dcomp, ncomp, op);
+            PC_local_swap_cpu(thecpc, src, scomp, dcomp, ncomp); // much faster
         }
 
         return;
@@ -483,7 +486,8 @@ CellFabArray::ParallelCopy (CellFabArray& src,
             else
 #endif
             {
-                PC_local_cpu(thecpc, src, SC, DC, NC, op);
+                //PC_local_cpu(thecpc, src, SC, DC, NC, op);
+                PC_local_swap_cpu(thecpc, src, SC, DC, NC); // much faster
             }
         }
 
@@ -510,6 +514,33 @@ CellFabArray::ParallelCopy (CellFabArray& src,
 }
 
 void
+CellFabArray::PC_local_swap_cpu (const CPC& thecpc, CellFabArray& src,
+                                int scomp, int dcomp, int ncomp)
+{
+    if (!Cell::transfer_particles) return;
+
+    int N_locs = thecpc.m_LocTags->size();
+
+/*#ifdef _OPENMP
+#pragma omp parallel
+#endif*/
+    for (int i = 0; i < N_locs; ++i)
+    {
+        const CopyComTag& tag = (*thecpc.m_LocTags)[i];
+        if (this != &src || tag.dstIndex != tag.srcIndex || tag.sbox != tag.dbox) {
+            auto sfab = src.array(tag.srcIndex);
+            auto dfab = array(tag.dstIndex);
+            
+            ParallelFor (tag.dbox, ncomp,
+            [=] (int i, int j, int k, int n) noexcept
+            {
+                dfab(i,j,k,dcomp+n).swap( sfab(i,j,k,scomp+n) );
+            });
+        }
+    }
+}
+
+void
 CellFabArray::PC_local_cpu (const CPC& thecpc, CellFabArray const& src,
                              int scomp, int dcomp, int ncomp, CpOp op)
 {
@@ -519,9 +550,9 @@ CellFabArray::PC_local_cpu (const CPC& thecpc, CellFabArray const& src,
     bool is_thread_safe = thecpc.m_threadsafe_loc;
     if (is_thread_safe)
     {
-/*#ifdef _OPENMP
+#ifdef _OPENMP
 #pragma omp parallel for
-#endif*/
+#endif
         for (int i = 0; i < N_locs; ++i)
         {
             const CopyComTag& tag = (*thecpc.m_LocTags)[i];
@@ -552,9 +583,9 @@ CellFabArray::PC_local_cpu (const CPC& thecpc, CellFabArray const& src,
             }
         }
 
-/*#ifdef _OPENMP
+#ifdef _OPENMP
 #pragma omp parallel
-#endif*/
+#endif
         for (MFIter mfi(*this); mfi.isValid(); ++mfi)
         {
             const auto& tags = loc_copy_tags[mfi];

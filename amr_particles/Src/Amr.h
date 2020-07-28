@@ -42,8 +42,11 @@ public:
 
     void InitAmr ();
 
-    //! Init levels after construction. Must be called before timestepping.
-    virtual void init (const BoxArray* lev0_grids = 0, const Vector<int>* pmap = 0);
+    //! Init level 0 after construction. Must be called before timestepping.
+    virtual void initBaseLevel (const BoxArray* lev0_grids = 0, const Vector<int>* pmap = 0);
+
+    //! Define and initialize refined levels. Must be called after initBaseLevel.
+    void initFineLevels () { bldFineLevels(); };
 
     //! The destructor.
     virtual ~Amr ();
@@ -54,9 +57,7 @@ public:
     static void Initialize ();
     static void Finalize ();
 
-    void LoadBalance (Real time) {
-        LoadBalanceLevel0(time);
-    }
+    void LoadBalance () { LoadBalanceLevel0(); }
 
     //! AmrLevel lev.
     AmrLevel& getLevel (int lev) noexcept { return *amr_level[lev]; }
@@ -153,7 +154,7 @@ public:
     void RedistributeParticles ();
 #endif
 
-    void InstallNewDistributionMap (int lev, const DistributionMapping& newdm);
+    void InstallNewDistributionMap (int lev, const BoxArray& newba, const DistributionMapping& newdm);
 
 
     void printGridInfo (std::ostream& os,
@@ -163,27 +164,23 @@ public:
 protected:
 
     //! Initialize grid hierarchy -- called by Amr::init.
-    void initialInit (Real strt_time, Real stop_time,
-                      const BoxArray* lev0_grids = 0, const Vector<int>* pmap = 0);
+    void initialInit (const BoxArray* lev0_grids = 0, const Vector<int>* pmap = 0);
     //! Check for valid input.
     void checkInput ();
     //! Define and initialize coarsest level.
-    void defBaseLevel (Real start_time, const BoxArray* lev0_grids = 0, const Vector<int>* pmap = 0);
+    void defBaseLevel (const BoxArray* lev0_grids = 0, const Vector<int>* pmap = 0);
     //! Define and initialize refined levels.
-    void bldFineLevels (Real start_time);
+    void bldFineLevels ();
     //! Rebuild grid hierarchy finer than lbase.
-    virtual void regrid (int  lbase,
-                         Real time,
-                         bool initial = false) override;
+    void regrid (int  lbase, bool initial = false);
     //! Define new grid locations (called from regrid) and put into new_grids.
     void grid_places (int               lbase,
-                      Real              time,
                       int&              new_finest,
                       Vector<BoxArray>& new_grids);
 
     //! Used if loadbalance_with_workestimates is set true 
-    DistributionMapping makeLoadBalanceDistributionMap (int lev, Real time, const BoxArray& ba) const;
-    void LoadBalanceLevel0 (Real time);
+    DistributionMapping makeLoadBalanceDistributionMap (int lev, const BoxArray& ba) const;
+    void LoadBalanceLevel0 ();
 
     // Make a new level using provided BoxArray and DistributionMapping and
     // fill with interpolated coarse level data.
@@ -218,11 +215,11 @@ protected:
     void ManualTagsPlacement (int lev, TagBoxArray& tags, const Vector<IntVect>& bf_lev);
 
     //! Do a single timestep on level L.
-    virtual void timeStep (int  level,
+    /*virtual void timeStep (int  level,
                            Real time,
                            int  iteration,
                            int  niter,
-                           Real stop_time);
+                           Real stop_time);*/
 
     //
     // The data ...

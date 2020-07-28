@@ -103,6 +103,24 @@ Amr::InitAmr ()
        for (int i = 0; i < max_level; i++)
            regrid_int[i]  = 1;
     }
+
+    // Determine which directions to refine (for 2D simulations)
+	Vector<int> ref_dir(AMREX_SPACEDIM, 1);
+    pp.getarr("ref_dir",ref_dir,0,AMREX_SPACEDIM);
+    for (int i = 0; i < AMREX_SPACEDIM; i++)
+    {
+        if(!ref_dir[i]) {
+            for (int j = 0; j <= max_level; j++) {
+                ref_ratio[j][i] = 1;
+            }
+            // redefining geometries
+            for (int j = 1; j <= max_level; j++) {
+                Geometry& geom = Geom(j);
+                geom.Domain(Geom(j-1).Domain());
+                geom.refine(ref_ratio[j-1]);
+            }
+        }
+    }
     
     // Read in the regrid interval if max_level > 0.
     if (max_level > 0) 
@@ -329,9 +347,9 @@ Amr::checkInput ()
 }
 
 void
-Amr::init (const BoxArray* lev0_grids, const Vector<int>* pmap)
+Amr::initBaseLevel (const BoxArray* lev0_grids, const Vector<int>* pmap)
 {
-    BL_PROFILE("Amr::initialInit()");
+    BL_PROFILE("Amr::init()");
     
     ParmParse pp;
 
@@ -348,26 +366,16 @@ Amr::init (const BoxArray* lev0_grids, const Vector<int>* pmap)
     finest_level = 0;
 
     // Define base level grids.
-    defBaseLevel(0, lev0_grids, pmap);
-
-    // Build fine level grids.
-    if (max_level > 0) bldFineLevels(0);
-
-    for (int lev = 0; lev <= finest_level; lev++) {
-        amr_level[lev]->post_regrid(0,finest_level);
-    }
+    defBaseLevel(lev0_grids, pmap);
 }
 
-void
+/*void
 Amr::timeStep (int  level,
                Real time,
                int  iteration,
                int  niter,
                Real stop_time)
 {
-    BL_PROFILE("Amr::timeStep()");
-    BL_COMM_PROFILE_NAMETAG("Amr::timeStep TOP");
-
     // This is used so that the AmrLevel functions can know which level is being advanced 
     //      when regridding is called with possible lbase > level.
     which_level_being_advanced = level;
@@ -407,11 +415,10 @@ Amr::timeStep (int  level,
 
     // Set this back to negative so we know whether we are in fact in this routine
     which_level_being_advanced = -1;
-}
+}*/
 
 void
-Amr::defBaseLevel (Real              strt_time, 
-                   const BoxArray*   lev0_grids,
+Amr::defBaseLevel (const BoxArray*   lev0_grids,
                    const Vector<int>* pmap)
 {
     BL_PROFILE("Amr::defBaseLevel()");
@@ -454,12 +461,77 @@ Amr::defBaseLevel (Real              strt_time,
     this->SetDistributionMap(0, DistributionMapping(lev0));
 
     // Now build level 0 grids.
-    amr_level[0].reset(new AmrLevel(*this, 0, Geom(0), grids[0], dmap[0], strt_time));
+    amr_level[0].reset(new AmrLevel(*this, 0, Geom(0), grids[0], dmap[0]));
+}
+
+void
+Amr::bldFineLevels ()
+{
+    BL_PROFILE("Amr::bldFineLevels()");
+    finest_level = 0;
+
+    Vector<BoxArray> new_grids(max_level+1);
+    Print() << "Building fine levels\n";
+    // Get initial grid placement.
+    do
+    {
+        int new_finest;
+
+        grid_places(finest_level,new_finest,new_grids);
+        
+        if (new_finest <= finest_level) break;
+        
+        // Create a new level and link with others.
+        finest_level = new_finest;
+
+	    DistributionMapping new_dm {new_grids[new_finest]};
+
+        AmrLevel* level = new AmrLevel(*this, new_finest, Geom(new_finest),
+                                       new_grids[new_finest], new_dm);
+
+        amr_level[new_finest].reset(level);
+        this->SetBoxArray(new_finest, new_grids[new_finest]);
+        this->SetDistributionMap(new_finest, new_dm);
+        
+        // Setup data
+        level->FillFromCoarsePatch(level->getData(), 0, nComp());
+    }
+    while (finest_level < max_level);
+    
+    return; 
+
+    // Iterate grids to ensure fine grids encompass all interesting gunk.
+    // but only iterate if we did not provide a grids file.
+    if ( regrid_grids_file.empty() || !initial_grids_file.empty() )  
+    {
+        bool grids_the_same;
+        const int MaxCnt = 4;
+        int count = 0;
+
+        do
+        {
+            for (int i = 0; i <= finest_level; i++) {
+                new_grids[i] = amr_level[i]->boxArray();
+            }
+
+            regrid(0,true);
+
+            grids_the_same = true;
+
+            for (int i = 0; i <= finest_level && grids_the_same; i++) {
+                if (!(new_grids[i] == amr_level[i]->boxArray())) {
+                    grids_the_same = false;
+                }
+            }
+
+            count++;
+        }
+        while (!grids_the_same && count < MaxCnt);
+    }
 }
 
 void
 Amr::regrid (int  lbase,
-             Real time,
              bool initial)
 {
     BL_PROFILE("Amr::regrid()");
@@ -476,7 +548,7 @@ Amr::regrid (int  lbase,
     Vector<BoxArray>            new_grid_places(max_level+1);
     Vector<DistributionMapping> new_dmap(max_level+1);
 
-    grid_places(lbase,time,new_finest, new_grid_places);
+    grid_places(lbase,new_finest, new_grid_places);
 
     bool regrid_level_zero = (!initial) && (lbase == 0)
         && ( loadbalance_with_workestimates || (new_grid_places[0] != amr_level[0]->boxArray()));
@@ -493,9 +565,7 @@ Amr::regrid (int  lbase,
         }
     }
 
-    //
     // Reclaim all remaining storage for levels > new_finest.
-    //
     for(int lev = new_finest + 1; lev <= finest_level; ++lev) {
         amr_level[lev].reset();
         this->ClearBoxArray(lev);
@@ -504,24 +574,19 @@ Amr::regrid (int  lbase,
 
     finest_level = new_finest;
 
-    //
     // Define the new grids from level start up to new_finest.
-    //
     for(int lev = start; lev <= new_finest; ++lev) {
-
         // Construct skeleton of new level.
         if (loadbalance_with_workestimates && !initial) {
-            new_dmap[lev] = makeLoadBalanceDistributionMap(lev, time, new_grid_places[lev]);
+            // KNAPSACK load balancing
+            new_dmap[lev] = makeLoadBalanceDistributionMap(lev, new_grid_places[lev]);
         }
         else if (new_dmap[lev].empty()) {
+            // SFC load balancing
 	        new_dmap[lev].define(new_grid_places[lev]);
 	    }
 
-        AmrLevel* a = new AmrLevel(*this, lev, Geom(lev), new_grid_places[lev], new_dmap[lev]);
-
-        amr_level[lev].reset(a);
-        this->SetBoxArray(lev, amr_level[lev]->boxArray());
-        this->SetDistributionMap(lev, amr_level[lev]->DistributionMap());
+        InstallNewDistributionMap(lev, new_grid_places[lev], new_dmap[lev]);
     }
 
     // Check at *all* levels whether we need to do anything special now that the grids
@@ -541,13 +606,14 @@ Amr::regrid (int  lbase,
     }
 }
 
+// used when making initial distribution or when using work estimates.
 DistributionMapping
-Amr::makeLoadBalanceDistributionMap (int lev, Real time, const BoxArray& ba) const
+Amr::makeLoadBalanceDistributionMap (int lev, const BoxArray& ba) const
 {
     BL_PROFILE("makeLoadBalanceDistributionMap()");
 
     if (verbose) {
-        amrex::Print() << "Load balance on level " << lev << " at t = " << time << "\n";
+        //amrex::Print() << "Load balance on level " << lev << " at t = " << time << "\n";
     }
 
     DistributionMapping newdm;
@@ -560,8 +626,8 @@ Amr::makeLoadBalanceDistributionMap (int lev, Real time, const BoxArray& ba) con
         } else {
             dmtmp.define(ba);
         }
-        amrex::Print() << "    Calculate work estimates\n";
-        // TODO: Fill multifab with weights for dist mapping
+        //amrex::Print() << "    Calculate work estimates\n";
+        // Fill multifab with weights for dist mapping
         MultiFab workest(ba, dmtmp, 1, 0, MFInfo(), FArrayBoxFactory());
         amr_level[lev]->estimateWork(workest);
 
@@ -579,37 +645,29 @@ Amr::makeLoadBalanceDistributionMap (int lev, Real time, const BoxArray& ba) con
 }
 
 void
-Amr::LoadBalanceLevel0 (Real time)
+Amr::LoadBalanceLevel0 ()
 {
     BL_PROFILE("LoadBalanceLevel0()");
-    const auto& dm = makeLoadBalanceDistributionMap(0, time, boxArray(0));
-    InstallNewDistributionMap(0, dm);
+    const auto& dm = makeLoadBalanceDistributionMap(0, boxArray(0));
+    InstallNewDistributionMap(0, boxArray(0), dm);
     amr_level[0]->post_regrid(0,0);
 }
 
 void
-Amr::InstallNewDistributionMap (int lev, const DistributionMapping& newdm)
+Amr::InstallNewDistributionMap (int lev, const BoxArray& newba, const DistributionMapping& newdm)
 {
     BL_PROFILE("InstallNewDistributionMap()");
+    
+    AmrLevel* a = new AmrLevel(*this, lev, Geom(lev), newba, newdm);
+    CellFabArray& new_data = a->getData();
 
-    AmrLevel* a = new AmrLevel(*this, lev, Geom(lev), boxArray(lev), newdm);
-
+    Print() << "Install new level " << a->Level() << " (finest=" << finest_level << ")\n";
     AmrLevel* old = amr_level[lev].get();
-
-    CellFabArray& S_new = a->getData(); // should be already defined
-
-    if (lev == 0)
-    {
-        Print() << "    FillFromLevel0\n";
-        // TODO: maybe move this to FillPatch later
-        S_new.FillPatchSingleLevel({0,0,0}, old->getData(), 0, 0, nComp(), Geom(lev));
-    } else
-    {
-        AmrLevel::FillPatch(*old, S_new, 0, 0, 0, S_new.nComp()); // Fill S_new with data in old
-    }
+    
+    // Fill new_data with data in old
+    AmrLevel::FillPatch(*old, new_data, 0, 0, new_data.nComp()); 
     
     amr_level[lev].reset(a);
-
     this->SetBoxArray(lev, amr_level[lev]->boxArray());
     this->SetDistributionMap(lev, amr_level[lev]->DistributionMap());
 }
@@ -659,21 +717,18 @@ Amr::printGridInfo (std::ostream& os,
 
 void
 Amr::grid_places (int              lbase,
-                  Real             time,
                   int&             new_finest,
                   Vector<BoxArray>& new_grids)
 {
     BL_PROFILE("Amr::grid_places()");
-    Print() << "    grid_places\n";
 
     const Real strttime = amrex::second();
 
     if (lbase == 0) {
-        Print() << "    MakeBaseGrids\n";
 	    new_grids[0] = MakeBaseGrids();
     }
 
-    if ( time == 0. && !initial_grids_file.empty() && !use_fixed_coarse_grids)
+    if (!initial_grids_file.empty() && !use_fixed_coarse_grids)
     {
         new_finest = std::min(max_level,(finest_level+1));
         new_finest = std::min<int>(new_finest,initial_ba.size());
@@ -737,9 +792,8 @@ Amr::grid_places (int              lbase,
         return;
     }
     
-    Print() << "    MakeNewGrids\n";
-    MakeNewGrids(lbase, time, new_finest, new_grids);
-
+    MakeNewGrids(lbase, 0, new_finest, new_grids);
+    
     if (verbose > 0)
     {
         Real stoptime = amrex::second() - strttime;
@@ -766,70 +820,6 @@ void
 Amr::ManualTagsPlacement (int lev, TagBoxArray& tags, const Vector<IntVect>& bf_lev)
 {
     amr_level[lev]->manual_tags_placement(tags, bf_lev);
-}
-
-void
-Amr::bldFineLevels (Real strt_time)
-{
-    BL_PROFILE("Amr::bldFineLevels()");
-    finest_level = 0;
-
-    Vector<BoxArray> new_grids(max_level+1);
-    //
-    // Get initial grid placement.
-    //
-    do
-    {
-        int new_finest;
-
-        grid_places(finest_level,strt_time,new_finest,new_grids);
-
-        if (new_finest <= finest_level) break;
-        //
-        // Create a new level and link with others.
-        //
-        finest_level = new_finest;
-
-	    DistributionMapping new_dm {new_grids[new_finest]};
-
-        AmrLevel* level = new AmrLevel(*this, new_finest, Geom(new_finest),
-                                       new_grids[new_finest], new_dm, strt_time);
-
-        amr_level[new_finest].reset(level);
-        this->SetBoxArray(new_finest, new_grids[new_finest]);
-        this->SetDistributionMap(new_finest, new_dm);
-    }
-    while (finest_level < max_level);
-    //
-    // Iterate grids to ensure fine grids encompass all interesting gunk.
-    // but only iterate if we did not provide a grids file.
-    //
-    if ( regrid_grids_file.empty() || (strt_time == 0.0 && !initial_grids_file.empty()) )  
-    {
-        bool grids_the_same;
-        const int MaxCnt = 4;
-        int count = 0;
-
-        do
-        {
-            for (int i = 0; i <= finest_level; i++) {
-                new_grids[i] = amr_level[i]->boxArray();
-            }
-
-            regrid(0,strt_time,true);
-
-            grids_the_same = true;
-
-            for (int i = 0; i <= finest_level && grids_the_same; i++) {
-                if (!(new_grids[i] == amr_level[i]->boxArray())) {
-                    grids_the_same = false;
-                }
-            }
-
-            count++;
-        }
-        while (!grids_the_same && count < MaxCnt);
-    }
 }
 
 const Vector<BoxArray>& Amr::getInitialBA() noexcept

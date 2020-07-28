@@ -1,6 +1,4 @@
 
-CMP = mpic++
-LNK = mpic++
 #set default architecture, can be overridden from the compile line
 ARCH = ${VLASIATOR_ARCH}
 
@@ -13,8 +11,8 @@ INCS += -I/Src
 LIBS += ${LIB_BOOST}
 LIBS += ${LIB_ZOLTAN}
 
-CXXFLAGS = -I $(HOME)/include  -L $(HOME)/lib -O3  -funroll-loops -std=c++17 -fopenmp -W -Wno-unused -fabi-version=0 -mavx -DPAPI_MEM
-MATHFLAGS = -ffast-math
+#CXXFLAGS = -I $(HOME)/include  -L $(HOME)/lib -O3  -funroll-loops -std=c++17 -fopenmp -W -Wno-unused -fabi-version=0 -mavx -DPAPI_MEM
+#MATHFLAGS = -ffast-math
 
 clean:
 	rm -rf *.o dccrg amrex

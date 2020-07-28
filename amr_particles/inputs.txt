@@ -3,8 +3,8 @@
 geometry.is_periodic =  1  1  0
 geometry.coord_sys   =  0       # 0 => cartesian
 geometry.prob_lo     =  0.0  0.0  0.0 
-geometry.prob_hi     =  10.0  10.0  1.0
-amr.n_cell           =  10  10  1         # should be even in all directions
+geometry.prob_hi     =  4.0  4.0  1.0
+amr.n_cell           =  4  4  1
 
 # default values
 n_comp               =  1     # number of components
@@ -14,12 +14,17 @@ n_grow               =  1     # number of ghost cells around fab array
 amr.v               = 1       # verbosity in Amr
 
 # REFINEMENT
-amr.max_level       = 0       # maximum level number allowed ( >= 0 )
+amr.max_level       = 1       # maximum level number allowed ( >= 0 )
 amr.ref_ratio       = 2 2 2 2 # refinement ratio (for each level)
-amr.blocking_factor = 1       # block factor in grid generation
-amr.max_grid_size   = 4      
+amr.ref_dir         = 1 1 0   # which directions to refine (for example, in 2D)
+
+amr.max_grid_size   = 16      
+# amr.max_grid_size_x
+amr.blocking_factor_x = 4     # each grid is divisible by blocking_factor
+amr.blocking_factor_y = 4     # must by either 1 or factor of 2
+amr.blocking_factor_z = 1       
 
 amr.regrid_int      = 2       # how often to regrid
-amr.n_error_buf     = 0       # buffer cells around each tagged cell
+amr.n_error_buf     = 0       # buffer cells around each tagged cell (0 is dangerous)
 
 amr.loadbalance_with_workestimates = 0

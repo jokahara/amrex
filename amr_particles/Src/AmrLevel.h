@@ -25,6 +25,7 @@ class Amr;
 */
 class AmrLevel
 {
+    friend class AmrIter;
     friend class FillPatchIterator;
     friend class FillPatchIteratorHelper;
 
@@ -49,8 +50,15 @@ public:
     //! The destructor.
     ~AmrLevel ();
 
-    //! Do an integration step on this level. Returns maximum safe time step.
-    //virtual Real advance (Real time, Real dt, int  iteration, int  ncycle) { return 0; }
+    /**
+    * Init data on this level from another AmrLevel (during regrid).
+    */
+    //virtual void init (AmrLevel &old) = 0;
+    /**
+    * Init data on this level after regridding if old AmrLevel
+    * did not previously exist.
+    */
+    //virtual void init () = 0;
 
     //! Operations to be done after regridding
     void post_regrid (int lbase, int new_finest) { }
@@ -91,14 +99,13 @@ public:
                    int          tagval,
                    Real         time,
                    int          n_error_buf = 0,
-                   int          ngrow = 0) { }
+                   int          ngrow = 0);
 
     //! Interpolate from coarse level to the valid area in dest.
-    void FillCoarsePatch (CellFabArray& dest,
-                          Real      time,
-                          int       icomp,
-                          int       ncomp,
-			              int       nghost = 0);
+    void FillFromCoarsePatch (CellFabArray& dest,
+                              int       icomp,
+                              int       ncomp,
+                              int       nghost = 0);
                                         
     //! Data container.
     CellFabArray& getData () noexcept { return state; }
@@ -119,16 +126,22 @@ public:
     static void FillPatch (AmrLevel& AmrLevel,
                            CellFabArray& leveldata,
                            int       boxGrow,
-                           Real      time,
                            int       icomp,
                            int       ncomp);
 
-    static void FillPatchAdd (AmrLevel& AmrLevel,
+    // fill an entire CellFabArray by interpolating from the coarser level
+    // this comes into play when a new level of refinement appears
+    /*void FillCoarsePatch (CellFabArray& fine, 
+                            int        icomp, 
+                            int        ncomp,
+                            int        ngrow)*/
+
+    /*static void FillPatchAdd (AmrLevel& AmrLevel,
                               CellFabArray& leveldata,
                               int       boxGrow,
                               Real      time,
                               int       icomp,
-                              int       ncomp);
+                              int       ncomp);*/
 
 protected:
     //
@@ -146,12 +159,35 @@ protected:
     BoxArray              m_AreaNotToTag; //Area which shouldn't be tagged on this level.
     Box                   m_AreaToTag;    //Area which is allowed to be tagged on this level.
 
+    BoxArray areaToPropagate;
+    BoxArray areaToIgnore;      // This are overlaps with finer levels are is therefore not propagated.
+
     std::unique_ptr<FabFactory<CellFab> > m_factory;
 
 private:
 
     mutable BoxArray      edge_grids[AMREX_SPACEDIM];  // face-centered grids
     mutable BoxArray      nodal_grids;              // all nodal grids
+};
+
+class AmrIter : public MFIter 
+{
+  public:
+    friend class AmrLevel;
+
+    AmrIter (AmrLevel&  AmrLevel) 
+    : MFIter(AmrLevel.areaToPropagate, AmrLevel.DistributionMap()) {}
+
+    AmrIter (FabArrayBase& fabarray, bool do_tiling=false) 
+    : MFIter(fabarray, do_tiling) {}
+
+    ~AmrIter () {};
+    
+  private:
+    // Disallowed.
+    AmrIter ();
+    AmrIter (const AmrIter& rhs);
+    AmrIter& operator= (const AmrIter& rhs);
 };
 
 //

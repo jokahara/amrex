@@ -1,10 +1,8 @@
-#ifndef FillPatchUtil_I_H_
-#define FillPatchUtil_I_H_
+#ifndef Interpolater_H_
+#define Interpolater_H_
 
 #include <AMReX_Box.H>
-#include <AMReX_BCRec.H>
 #include <AMReX_REAL.H>
-#include <AMReX_GpuControl.H>
 #include <AMReX_Geometry.H>
 
 using namespace amrex;
@@ -32,7 +30,8 @@ bool ProperlyNested (const IntVect& ratio, const IntVect& blocking_factor, int n
     fine_box.refine(ratio_max);
     fine_box.grow(ngrow);
 
-    Box& fine_box_coarsened = amrex::coarsen(fine_box, ratio_max).grow(1);
+    Interpolater* mapper = &cell_cons_interp;
+    const Box& fine_box_coarsened = mapper->CoarseBox(fine_box, ratio_max);
 
     return crse_box.contains(fine_box_coarsened);
 }

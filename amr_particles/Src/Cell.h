@@ -75,6 +75,13 @@ public:
 		return *this;
 	}
 
+	// efficiently move src data to this cell 
+	void swap(Cell& src) {
+		particles.swap(src.particles);
+		number_of_particles = particles.size();
+		src.number_of_particles = src.particles.size();
+	}
+
 	// reserves space for particle data coming over MPI.
 	void resize()
 	{
