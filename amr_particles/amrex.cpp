@@ -35,99 +35,129 @@ using namespace std;
 using namespace boost;
 using namespace amrex;
 
-void update_cell_lists(CellFabArray &grid, Geometry &geom) {
-	
+void update_cell_lists(AmrLevel& level, Geometry &geom) 
+{
+	CellFabArray &grid = level.getCells();
+	//int added=0;
 	// move particles to the particle list of the cell the particles are currently inside of
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
+	for (AmrIter mfi(level); mfi.isValid(); ++mfi) {
+		if (!mfi.isPropagated()) continue;
+
 		auto const& a = grid[mfi].array();
 		auto box = mfi.validbox();
 
-		Loop(box, [&] (int i, int j, int k)
+		For(box.growHi(0,1), [&] (int i, int j, int k)
 		{
 			const IntVect cell(i,j,k);
-			auto *previous_data = &a(cell);
-
 			const IntVect neighbor_cell = cell - IntVect(1,0,0);
-			auto *neighbor_data = &a(neighbor_cell);
+			auto& neighbor_data = a(neighbor_cell);
 
-			vector<std::array<double, 3>>::size_type n = 0;
+			int n = 0;
 			while (n < neighbor_data->particles.size()) {				
 				const IntVect current_cell = 
 					geom.CellIndex( neighbor_data->particles[n].data() );
 				
 				if (current_cell == cell) {
-					auto *current_data = &a(current_cell);
+					auto& current_data = a(current_cell);
 					current_data->particles.push_back(neighbor_data->particles[n]);
 					current_data->number_of_particles = current_data->particles.size();
-				}
-				n++;
+					//added++;
+					
+					neighbor_data->particles.erase(neighbor_data->particles.begin() + n);
+					neighbor_data->number_of_particles = neighbor_data->particles.size();
+				} 
+				else n++;
 			}
 		});
 	}
-
-	// remove particles which don't belong to their current cells
-	for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
-		auto const& a = grid[mfi].array();
-		auto box = mfi.validbox();
-
-		Loop(box, [&] (int i, int j, int k)
-		{
-			const IntVect previous_cell(i,j,k);
-			auto *previous_data = &a(previous_cell);
-
-			vector<std::array<double, 3>>::size_type n = 0;
-			while (n < previous_data->particles.size()) {
-
-				const IntVect current_cell = 
-					geom.CellIndex( previous_data->particles[n].data() );
-
-				if (current_cell == previous_cell) {
-					n++;
-				}
-				else {
-					previous_data->particles.erase(previous_data->particles.begin() + n);
-					previous_data->number_of_particles = previous_data->particles.size();
-				}
-			}
-		});
-	}
+	//Print() << "moved " << added << "\n";
+	
 }
 
 void printCounts(Amr& amr) 
 {
+	sleep(ParallelDescriptor::MyProc());
 	int total = 0;
-	for (int lev = 0; lev <= amr.maxLevel(); lev++)
+	int nghost = 0;
+	int count = 0;
+	
+	for (int lev = 0; lev <= amr.finestLevel(); lev++)
 	{
-		AmrLevel &level = amr[lev];
+		AllPrint() << "\n\tRANK " << ParallelDescriptor::MyProc() << ", "
+				   << "LEVEL " << lev << "\n";
 
-		AllPrint() << "LEVEL " << lev << "\n";
-		CellFabArray& grid = level.getData();
-
-		//sleep(ParallelDescriptor::MyProc());
-		//AllPrint() << "rank: " << ParallelDescriptor::MyProc() << "\n";
-
-		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
-			const Box& box = mfi.validbox();
-
-			auto a = grid[mfi].array();
-			int n = 0;
-			Loop(box, [&] (int i, int j, int k) 
-			{	
-				Cell* cell_data = &a(i,j,k);
-				 n+= cell_data->number_of_particles;
+		for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) 
+		{
+			//if (!mfi.isPropagated()) continue;
+			const auto& fab = amr[lev].getCells()[mfi];
+			int line = 0;
+			For(mfi.validbox().grow(IntVect{1,1,0}), amr.nComp(), [&] (int i, int j, int k, int n) 
+			{
+				if(j != line) {
+					line = j;
+					AllPrint() << "\n";
+				}
+				auto& p = fab(IntVect{i,j,k},n);
+				if(p->number_of_particles < 10) AllPrint() << " ";
+				Print() << p->number_of_particles << " ";
+				count += p->number_of_particles;
 			});
-
-			AllPrint() << "  Box: " << box << " has " << n << " particles\n";
-			total += n;
-			/*Real loc[3];
-			amr.Geom(lev).CellCenter(IntVect(box.loVect()), loc);
-			AllPrint() << "  Real low: " << loc[0] << " " << loc[1] << " " << loc[2] << ":\n"; 
-
-			amr.Geom(lev).CellCenter(IntVect(box.hiVect()), loc);
-			AllPrint() << "  Real high: " << loc[0] << " " << loc[1] << " " << loc[2] << ":\n"; */
+			AllPrint() << "\n" << mfi.validbox() << "\n";
 		}
 	}
+
+	Print() << count << " particles\n";
 	AllPrint() << "rank " << ParallelDescriptor::MyProc() << " has " << total << " particles in total\n";
+	AllPrint() << " + " << nghost << " in ghost cells\n";
+}
+
+void count(Amr& amr) 
+{
+	sleep(ParallelDescriptor::MyProc());
+	int total = 0;
+	int nghost = 0;
+	for (int lev = 0; lev <= amr.finestLevel(); lev++)
+	{
+		AllPrint() << "RANK " << ParallelDescriptor::MyProc() << ", "
+				   << "LEVEL " << lev;
+
+		int count = 0;
+		for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) 
+		{
+			if (!mfi.isPropagated()) continue;
+			const auto& fab = amr[lev].getCells()[mfi];
+			int line = 0;
+			For(mfi.validbox().grow(IntVect{0,0,0}), amr.nComp(), [&] (int i, int j, int k, int n) 
+			{
+				auto& p = fab(IntVect{i,j,k},n);
+				count += p->number_of_particles;
+			});
+		}
+		AllPrint() << ": " << count << " particles\n";
+	}
+
+}
+
+void propagate(const Box& box, CellFab& fab, Geometry& geom) 
+{
+	const double vx = 0.1;
+	//Print() << box << "\n";
+	ParallelFor(box, [&] (int i, int j, int k) 
+	{	
+		// loop over particles
+		IntVect iv(i,j,k);
+		//Print() << iv << "\n";
+		for (uint n = 0; n < fab(iv)->particles.size(); n++) 
+		{
+			auto &particle = fab(iv)->particles[n];
+			particle[0] += vx;
+
+			// hande grid wrap around
+			if(particle[0] >= geom.period(0)) {
+				particle[0] -= geom.period(0);
+			}
+		}
+	});
 }
 
 /*!
@@ -160,14 +190,16 @@ void save(const int rank, Amr &amr, unsigned int step)
 
 	// calculate the total number local of particles
 	uint64_t total_particles = 0;
-	for (int lev = 0; lev <= amr.maxLevel(); lev++)
+	for (int lev = 0; lev <= amr.finestLevel(); lev++)
 	{
-		auto& grid = amr[lev].getData();
-		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
+		auto& grid = amr[lev].getCells();
+		for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) {
+			if (!mfi.isPropagated()) continue;
+
 			auto const& a = grid[mfi].array();
 			For(mfi.validbox(), [&] (int i, int j, int k)
 			{
-				total_particles += a(i,j,k).particles.size();
+				total_particles += a(i,j,k)->particles.size();
 			});
 		}
 	}
@@ -176,15 +208,17 @@ void save(const int rank, Amr &amr, unsigned int step)
 	// write out coordinates
 	uint64_t written_particles = 0;
 	
-	for (int lev = 0; lev <= amr.maxLevel(); lev++)
+	for (int lev = 0; lev <= amr.finestLevel(); lev++)
 	{
-		auto& grid = amr[lev].getData();
-		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
+		auto& grid = amr[lev].getCells();
+		for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) {
+			if (!mfi.isPropagated()) continue;
+
 			auto const& a = grid[mfi].array();
 			For(mfi.validbox(), [&] (int i, int j, int k)
 			{
-				auto const particles = a(i,j,k).particles;
-				for (uint n = 0; n < a(i,j,k).particles.size(); n++)
+				auto const particles = a(i,j,k)->particles;
+				for (uint n = 0; n < a(i,j,k)->particles.size(); n++)
 				{
 					outfile << particles[n][0] << "\t"
 							<< particles[n][1] << "\t"
@@ -221,13 +255,15 @@ void save(const int rank, Amr &amr, unsigned int step)
 	}
 
 	outfile << "\nSCALARS lev int 1\nLOOKUP_TABLE default\n";
-	for (int lev = 0; lev <= amr.maxLevel(); lev++)
+	for (int lev = 0; lev <= amr.finestLevel(); lev++)
 	{
-		auto& grid = amr[lev].getData();
-		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
+		auto& grid = amr[lev].getCells();
+		for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) {
+			if (!mfi.isPropagated()) continue;
+
 			auto const& a = grid[mfi].array();
 			For(mfi.validbox(), [&] (int i, int j, int k) {
-				for (int n = 0; n < a(i,j,k).number_of_particles; n++)
+				for (int n = 0; n < a(i,j,k)->number_of_particles; n++)
 				{
 					outfile << lev << " ";
 				}
@@ -237,10 +273,12 @@ void save(const int rank, Amr &amr, unsigned int step)
 
 	// cell numbers of particles
 	outfile << "\nSCALARS cell int 1\nLOOKUP_TABLE default\n";
-	for (int lev = 0; lev <= amr.maxLevel(); lev++)
+	for (int lev = 0; lev <= amr.finestLevel(); lev++)
 	{
-		auto& grid = amr[lev].getData();
-		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
+		auto& grid = amr[lev].getCells();
+		for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) {
+			if (!mfi.isPropagated()) continue;
+			
 			auto const& a = grid[mfi].array();
 			For(mfi.validbox(), [&] (int i, int j, int k) {
 				for (int n = 0; n < 3; n++)
@@ -256,7 +294,6 @@ void save(const int rank, Amr &amr, unsigned int step)
 	outfile.close();
 }
 
-
 int main_main()
 {
 	clock_t before = clock();
@@ -268,21 +305,24 @@ int main_main()
 	
 	Amr amr;
 	amrex::Print() << "   Domain: " << amr.Geom(0).Domain().size() << "\n";
-	amr.initBaseLevel();
+	amr.defBaseLevel();
 
 	Print() << "Level " << 0 << " has " << amr[0].countCells() << " cells\n"; 
 	// Initialize particles
 	{
-		CellFabArray& grid = amr[0].getData();
+		CellFabArray& grid = amr[0].getCells();
+		int y = amr.Geom(0).Domain().length(1);
 
-		for (MFIter mfi(grid); mfi.isValid(); ++mfi) {
+		for (AmrIter mfi(amr[0]); mfi.isValid(); ++mfi) {
 			const Box& box = mfi.validbox();
 			auto a = grid[mfi].array();
 			int n = 0;
-			Loop(box, [&] (int i, int j, int k) 
+			For(box, [&] (int i, int j, int k) 
 			{
-				Cell* cell_data = &a(i,j,k);
-				const unsigned int number_of_particles = 1 + i*j;
+				Cell* cell_data = a(i,j,k).get();
+				if(!cell_data) Print() << "something went wrong\n";
+
+				const unsigned int number_of_particles = i+y*j;
 					//= (unsigned int)ceil(max_particles_per_cell * double(rand()) / RAND_MAX);
 				for (unsigned int n = 0; n < number_of_particles; n++) {
 					std::array<double, 3> coordinates = {{
@@ -297,17 +337,17 @@ int main_main()
 				
 			});
 		}
-
-		Cell::transfer_particles = false;
-		grid.FillBoundary(amr.Geom(0).periodicity());
 	}
 
     // Build fine level grids.
-    if (amr.maxLevel() > 0) amr.initFineLevels();
+    if (amr.maxLevel() > 0) amr.bldFineLevels();
 
 	Print() << "Finest level = " << amr.finestLevel() << "\n";
-	printCounts(amr);
 	
+	amr.FillAllBoundaries();
+	count(amr);
+	//printCounts(amr);
+
 	/*
 	Visualize the results for example with visit -o simple_particles.visit
 	or visit -o simple_grid.visit or overlay them both from the user interface.
@@ -324,7 +364,6 @@ int main_main()
 		visit_grid << "!NBLOCKS " << comm_size << "\n";
 	}
 	
-
 	const unsigned int max_steps = 50;
 	for (unsigned int step = 0; step < max_steps; step++) {
 		// append current output file names to the visit files
@@ -340,72 +379,62 @@ int main_main()
 		}
 		
 		//if (step % 5 == 0) amr.LoadBalance();
-		
-		save(rank, amr, step);
+		//Print() << "step " << step << "\n";
+		amr.FillAllBoundaries();
 
-		const double vx = 0.1;
+		//count(amr);
+	
+		save(rank, amr, step);
 
 		int Ncomp = amr.nComp();
 		for (int lev = 0; lev <= amr.finestLevel(); lev++)
 		{
+			//Print() << "	lev " << lev << "\n";
 			Geometry &geom = amr.Geom(lev);
-			CellFabArray& grid = amr[lev].getData();
+			CellFabArray& grid = amr[lev].getCells();
+
 			// move particles in x-direction
-			
-			//#pragma omp parallel
-			for (MFIter mfi(grid); mfi.isValid(); ++mfi) { // loop over local boxes
-				auto const& a = grid[mfi].array();
-				auto box = mfi.validbox();
-				// loop over cells
-				ParallelFor(box, [&] (int i, int j, int k) 
-				{	
-					// loop over particles
-					for (uint n = 0; n < a(i,j,k).particles.size(); n++) 
-					{
-						auto &particle = a(i,j,k).particles[n];
-						particle[0] += vx;
-
-						// hande grid wrap around
-						if(particle[0] >= geom.period(0)) {
-							particle[0] -= geom.period(0);
-						}
-					}
-				});
+			for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) { // loop over local boxes
+				if (!mfi.isPropagated()) continue;
+				Box box = mfi.validbox();
+				propagate(box, grid[mfi], geom);
 			}
-		}
-		// fine to coarse
-		for (int lev = 0; lev <= amr.finestLevel(); lev++) {
-			Geometry &geom = amr.Geom(lev);
-			CellFabArray& grid = amr[lev].getData();
-			// update particle counts between neighboring cells
-			Cell::transfer_particles = false;
-			grid.FillBoundary(geom.periodicity(), true); // cross=true to not fill corners
 
-			// get tags to cells which received data from remote cells
-			const auto& receiveTags = grid.get_receive_tags();
-			// resize ghost cells 
-			for (auto const& kv : receiveTags)
-			{
-				for (auto const& tag : kv.second)
+			auto& fine_bndry = amr[lev].getFineBoudary();
+			if (fine_bndry.coarse) {
+				BoxList done_boxes;
+				
+				for (size_t fab = 0; fab < fine_bndry.coarse->size(); fab++)
 				{
-					const auto& bx = tag.dbox;
-					auto dfab = grid.array(tag.dstIndex);
-					amrex::Loop( bx, Ncomp,
-					[&] (int ii, int jj, int kk, int n) noexcept
+					CellFab& cfab = fine_bndry.coarse->get(fab);
+					BoxList do_boxes(complementIn(cfab.box(), done_boxes));
+					for (int i = 0; i < do_boxes.size(); i++)
 					{
-						const IntVect idx = IntVect(ii,jj,kk);
-						dfab(idx, n).resize();
-					});
+						propagate(do_boxes.data()[i], cfab, geom);
+					}
+
+					done_boxes.join(do_boxes);
 				}
 			}
-
-			// update particle data between neighboring cells
-			Cell::transfer_particles = true;
-			grid.FillBoundary(geom.periodicity(), true);
-
-			update_cell_lists(grid, geom);
+			auto& crse_bndry = amr[lev].getCoarseBoudary();
+			if (crse_bndry.fine) {
+				BoxList done_boxes;
+				for (size_t fab = 0; fab < crse_bndry.fine->size(); fab++)
+				{
+					CellFab& cfab = crse_bndry.fine->get(fab);
+					BoxList do_boxes(complementIn(cfab.box(), done_boxes));
+					for (int i = 0; i < do_boxes.size(); i++)
+					{
+						propagate(do_boxes.data()[i], cfab, geom);
+					}
+					done_boxes.join(do_boxes);
+				}
+			}
+			
+			update_cell_lists(amr[lev], amr.Geom(lev));
 		}
-		// coarse to fine
+		
+		//count(amr);
 	}
 	// append final output file names to the visit files
 	if (rank == 0) {
@@ -435,12 +464,12 @@ int main_main()
 
 int main(int argc, char* argv[])
 {
-	// argv must include inputs file
 	if (MPI_Init(&argc, &argv) != MPI_SUCCESS) {
 		cerr << "Couldn't initialize MPI." << endl;
 		abort();
 	}
 
+	// arguments must include inputs file
     amrex::Initialize(argc, argv, true,  MPI_COMM_WORLD);
 	
 	main_main();

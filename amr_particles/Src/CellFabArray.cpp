@@ -1,5 +1,8 @@
 
 #include "CellFabArray.h"
+#include <AMReX_iMultiFab.H>
+
+MyInterpolater my_interpolater;
 
 void
 CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
@@ -41,7 +44,7 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
         else
 #endif
         {
-            FB_local_copy_cpu(TheFB, scomp, ncomp); 
+            //FB_local_copy_cpu(TheFB, scomp, ncomp); 
         }
 
         return;
@@ -67,7 +70,7 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
     
     // Post receives
     if (N_rcvs > 0) {
-        PostReceives(*TheFB.m_RcvTags, fb_send_reqs,
+        PostReceives(*TheFB.m_RcvTags /*get_receive_tags()*/, fb_send_reqs,
                     scomp, ncomp, SeqNum);
         fb_recv_stat.resize(N_rcvs);
     }
@@ -89,7 +92,7 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
         }
         else
 #endif
-            FB_local_copy_cpu(TheFB, scomp, ncomp);
+            //FB_local_copy_cpu(TheFB, scomp, ncomp);
 	}
 #endif
     return;
@@ -149,7 +152,7 @@ CellFabArray::PostSends (const MapOfCopyComTagContainers& m_SndTags,
                     addresses[cell], 
                     counts[cell], 
                     datatypes[cell]
-                ) = sfab(idx, n+icomp).get_mpi_datatype();
+                ) = sfab(idx, n+icomp)->get_mpi_datatype();
             });
             offset += bx.numPts()*ncomp;
         }
@@ -244,7 +247,7 @@ CellFabArray::PostReceives (const MapOfCopyComTagContainers& m_RcvTags,
                     addresses[cell], 
                     counts[cell], 
                     datatypes[cell]
-                ) = dfab(idx, n+icomp).get_mpi_datatype();
+                ) = dfab(idx, n+icomp)->get_mpi_datatype();
             });
             offset += bx.numPts()*ncomp;
         }
@@ -291,7 +294,6 @@ CellFabArray::FillBoundary_finish ()
     if (ParallelContext::NProcsSub() == 1) return;
 
 #ifdef AMREX_USE_MPI
-    //const FB& TheFB = getFB(fb_nghost,fb_period,fb_cross,fb_epo);
     const int N_rcvs = get_receive_tags().size();
     if (N_rcvs > 0)
     {
@@ -379,14 +381,15 @@ CellFabArray::ParallelCopy (CellFabArray& src,
 
     n_filled = dnghost;
 
+    // special case
     if ((src.boxArray().ixType().cellCentered() || op == FabArrayBase::COPY) 
         && (boxarray == src.boxarray && distributionMap == src.distributionMap)
 	    && snghost == IntVect::TheZeroVector() && dnghost == IntVect::TheZeroVector()
         && !period.isAnyPeriodic())
-    {
-/*#ifdef _OPENMP
+    {Abort();
+#ifdef _OPENMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
-#endif*/
+#endif
         for (MFIter fai(*this,TilingIfNotGPU()); fai.isValid(); ++fai)
         {
             const Box& bx = fai.tilebox();
@@ -405,12 +408,11 @@ CellFabArray::ParallelCopy (CellFabArray& src,
                     /*AMREX_HOST_DEVICE_PARALLEL_FOR_4D*/
                     AMREX_HOST_DEVICE_FOR_4D ( bx, ncomp, i, j, k, n,
                     {
-                        dfab(i,j,k,dcomp+n) += sfab(i,j,k,scomp+n);
+                        *dfab(i,j,k,dcomp+n) += *sfab(i,j,k,scomp+n);
                     });
                 }
             }
         }
-
         return;
     }
 
@@ -430,8 +432,7 @@ CellFabArray::ParallelCopy (CellFabArray& src,
         else
 #endif
         {
-            //PC_local_cpu(thecpc, src, scomp, dcomp, ncomp, op);
-            PC_local_swap_cpu(thecpc, src, scomp, dcomp, ncomp); // much faster
+            PC_local_cpu(thecpc, src, scomp, dcomp, ncomp, op);
         }
 
         return;
@@ -464,7 +465,7 @@ CellFabArray::ParallelCopy (CellFabArray& src,
         const int NC = std::min(NCompLeft,FabArrayBase::MaxComp);
         Vector<MPI_Request> recv_reqs;
         Vector<MPI_Request> send_reqs;
-
+        // TODO: make sure are no multiple sends to same index
         // Post rcvs.
         if (N_rcvs > 0) {
             PostReceives(*thecpc.m_RcvTags, recv_reqs, SC, NC, SeqNum);
@@ -486,8 +487,7 @@ CellFabArray::ParallelCopy (CellFabArray& src,
             else
 #endif
             {
-                //PC_local_cpu(thecpc, src, SC, DC, NC, op);
-                PC_local_swap_cpu(thecpc, src, SC, DC, NC); // much faster
+                PC_local_cpu(thecpc, src, SC, DC, NC, op);
             }
         }
 
@@ -513,14 +513,14 @@ CellFabArray::ParallelCopy (CellFabArray& src,
 #endif /*BL_USE_MPI*/
 }
 
+// do local part of ParallelCopy
 void
-CellFabArray::PC_local_swap_cpu (const CPC& thecpc, CellFabArray& src,
-                                int scomp, int dcomp, int ncomp)
+CellFabArray::PC_local_cpu (const CPC& thecpc, CellFabArray const& src,
+                             int scomp, int dcomp, int ncomp, CpOp op)
 {
-    if (!Cell::transfer_particles) return;
-
     int N_locs = thecpc.m_LocTags->size();
 
+// Doing parallel caused issues (multiple copies being created.)
 /*#ifdef _OPENMP
 #pragma omp parallel
 #endif*/
@@ -531,92 +531,84 @@ CellFabArray::PC_local_swap_cpu (const CPC& thecpc, CellFabArray& src,
             auto sfab = src.array(tag.srcIndex);
             auto dfab = array(tag.dstIndex);
             
-            ParallelFor (tag.dbox, ncomp,
-            [=] (int i, int j, int k, int n) noexcept
+            if (op == FabArrayBase::COPY)
             {
-                dfab(i,j,k,dcomp+n).swap( sfab(i,j,k,scomp+n) );
-            });
+                ParallelFor (tag.dbox, ncomp,
+                [=] (int i, int j, int k, int n) noexcept
+                {
+                    dfab(i,j,k,dcomp+n) = sfab(i,j,k,scomp+n);
+                });
+            } 
+            else 
+            {
+                ParallelFor (tag.dbox, ncomp,
+                [=] (int i, int j, int k, int n) noexcept
+                {
+                    if(!dfab(i,j,k,dcomp+n)) {
+                        // if ptr is null make new Cell
+                        dfab(i,j,k,dcomp+n).reset(new Cell());
+                    }
+                     *dfab(i,j,k,dcomp+n) += *sfab(i,j,k,scomp+n);
+                });
+            }
         }
     }
 }
 
-void
-CellFabArray::PC_local_cpu (const CPC& thecpc, CellFabArray const& src,
-                             int scomp, int dcomp, int ncomp, CpOp op)
+// Fill this with data from coarse and fine patches
+void       /* FillPatchFineBndry*/
+CellFabArray::FillPatchTwoLevels (CellFabArray& coarse, CellFabArray& fine, 
+                                  int scomp, int dcomp, int ncomp,
+                                  const Geometry& cgeom, const Geometry& fgeom,
+                                  const IntVect& ratio)
 {
-    int N_locs = thecpc.m_LocTags->size();
-    if (N_locs == 0) return;
+	BL_PROFILE("FillPatchTwoLevels");
 
-    bool is_thread_safe = thecpc.m_threadsafe_loc;
-    if (is_thread_safe)
-    {
-#ifdef _OPENMP
-#pragma omp parallel for
-#endif
-        for (int i = 0; i < N_locs; ++i)
-        {
-            const CopyComTag& tag = (*thecpc.m_LocTags)[i];
-            if (this != &src || tag.dstIndex != tag.srcIndex || tag.sbox != tag.dbox) {
-                // avoid self copy or plus
-                const auto* sfab = &(src[tag.srcIndex]);
-                      auto* dfab = &(get(tag.dstIndex));
-                if (op == FabArrayBase::COPY)
-                {
-                    dfab->template copy<RunOn::Host>(*sfab, tag.sbox, scomp, tag.dbox, dcomp, ncomp);
-                }
-                else
-                {
-                    dfab->template plus<RunOn::Host>(*sfab, tag.sbox, tag.dbox, scomp, dcomp, ncomp);
-                }
-            }
-        }
-    }
-    else
-    {
-        LayoutData<Vector<FabCopyTag<CellFab> > > loc_copy_tags(boxArray(),DistributionMap());
-        for (int i = 0; i < N_locs; ++i)
-        {
-            const CopyComTag& tag = (*thecpc.m_LocTags)[i];
-            if (this != &src || tag.dstIndex != tag.srcIndex || tag.sbox != tag.dbox) {
-                loc_copy_tags[tag.dstIndex].push_back
-                    ({src.fabPtr(tag.srcIndex), tag.dbox, tag.sbox.smallEnd()-tag.dbox.smallEnd()});
-            }
-        }
+    IntVect const& ngrow = nGrowVect(); // only grow boundaries?
+	MyInterpolater* mapper = &my_interpolater;
 
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-        for (MFIter mfi(*this); mfi.isValid(); ++mfi)
-        {
-            const auto& tags = loc_copy_tags[mfi];
-            auto dfab = this->array(mfi);
+	if (ngrow.max() > 0 || getBDKey() != fine.getBDKey())
+	{
+	    const InterpolaterBoxCoarsener& coarsener = mapper->BoxCoarsener(ratio);
+        
+	    Box fdomain(fgeom.Domain());
+        Box cdomain = amrex::coarsen(fdomain,ratio);
+
+	    for (int i = 0; i < AMREX_SPACEDIM; ++i) {
+            if (fgeom.isPeriodic(i)) {
+                fdomain.grow(i, ngrow[i]);
+            }
+	    }
+        
+        // Fill patch info
+	    /*const FabArrayBase::FPinfo& fpc 
+        = FabArrayBase::TheFPinfo(coarse, *this, fdomain, IntVect::TheZeroVector(), coarsener, cdomain, nullptr);*/
+        
+        // = *m_TheFillPatchCache.find(getBDKey())->second;
+	    if ( !this->boxarray.empty() /*fpc.ba_crse_patch.empty()*/)
+	    {
+            //CellFabArray coarse_patch(fpc.ba_crse_patch, fpc.dm_crse_patch, ncomp, 0);
+            BoxArray ba_crse_patch = amrex::coarsen(boxarray, ratio);
+            CellFabArray coarse_patch(ba_crse_patch, distributionMap, ncomp, 0);
+            coarse_patch.FillPatchSingleLevel(coarse, scomp, 0, ncomp, cgeom);
             
-            if (op == FabArrayBase::COPY) // whether to copy or add data 
+            for (MFIter mfi(coarse_patch); mfi.isValid(); ++mfi)
             {
-                for (auto const & tag : tags)
-                {
-                    auto const sfab = tag.sfab->array();
-                    Dim3 offset = tag.offset.dim3();
-                    amrex::LoopConcurrentOnCpu (tag.dbox, ncomp,
-                    [=] (int i, int j, int k, int n) noexcept
-                    {
-                        dfab(i,j,k,dcomp+n) = sfab(i+offset.x,j+offset.y,k+offset.z,scomp+n);
-                    });
-                }
+                auto& sfab = coarse_patch[mfi];
+                /*int local_id = mfi.LocalIndex();
+                int global_id = fpc.dst_idxs[local_id];
+                auto& dfab = (*this)[global_id];
+                const Box& dbx = fpc.dst_boxes[global_id] & dfab.box();*/
+                auto& dfab = (*this)[mfi];
+
+                //interpolate to fine box
+                mapper->interp(sfab, 0, dfab, dcomp, ncomp, dfab.box(), 
+                                ratio, cgeom, fgeom, RunOn::Cpu);
             }
-            else
-            {
-                for (auto const & tag : tags)
-                {
-                    auto const sfab = tag.sfab->array();
-                    Dim3 offset = tag.offset.dim3();
-                    amrex::LoopConcurrentOnCpu (tag.dbox, ncomp,
-                    [=] (int i, int j, int k, int n) noexcept
-                    {
-                        dfab(i,j,k,dcomp+n) += sfab(i+offset.x,j+offset.y,k+offset.z,scomp+n);
-                    });
-                }
-            }
-        }
-    }
+	    }
+	}
+
+    // fill from fine data
+	if (this != &fine) 
+        FillPatchSingleLevel({0,0,0}, fine, scomp, dcomp, ncomp, fgeom);
 }

@@ -6,6 +6,7 @@
 #include <limits>
 
 #include <AMReX_ParallelDescriptor.H>
+#include <AMReX_Vector.H>
 #include <AMReX_Utility.H>
 #include <AMReX_FillPatchUtil.H>
 #include <AMReX_ParmParse.H>
@@ -13,7 +14,6 @@
 #include <AMReX_Print.H>
 
 #include "AmrLevel.h"
-#include "Interpolater.h"
 
 AmrLevel::AmrLevel () noexcept
 {
@@ -26,13 +26,12 @@ AmrLevel::AmrLevel (Amr&            papa,
                     int             lev,
                     const Geometry& level_geom,
                     const BoxArray& ba,
-		            const DistributionMapping& dm,
-                    Real            time)
-    : geom(level_geom), grids(ba), dmap(dm), areaToPropagate(ba)
+		            const DistributionMapping& dm)
+: geom(level_geom), grids(ba), dmap(dm) 
 {
-    BL_PROFILE("AmrLevel::AmrLevel(dm)");
-    level  = lev;
+    BL_PROFILE("AmrLevel::AmrLevel()");
     parent = &papa;
+    level = lev;
 
     fine_ratio = IntVect::TheUnitVector(); fine_ratio.scale(-1);
     crse_ratio = IntVect::TheUnitVector(); crse_ratio.scale(-1);
@@ -47,10 +46,47 @@ AmrLevel::AmrLevel (Amr&            papa,
     }
 
     m_factory.reset(new CellFabFactory());
+    state.reset(new CellFabArray(grids, dmap, parent->nComp(), parent->nGrow(), MFInfo(), *m_factory));
     
-    state.define(grids, dmap, parent->nComp(), parent->nGrow(), MFInfo(), *m_factory);
+    // By default whole level is propagated
+    propagate_fab.resize(state->local_size());
+    propagate_fab.assign(propagate_fab.size(), true);
 
     if (parent->useFixedCoarseGrids()) constructAreaNotToTag();
+}
+
+void
+AmrLevel::init (AmrLevel* old) 
+{
+    const int ncomp = state->nComp();
+    const IntVect ngrow = state->nGrowVect();
+
+    // make empty initial cells (including ghost cells)
+    for (AmrIter mfi(*this); mfi.isValid(); ++mfi) 
+    {
+        const Box& box = mfi.growntilebox(ngrow);
+        auto cfab = state->array(mfi);
+        
+        Loop(box, ncomp, [&] (int i, int j, int k, int n) 
+        {
+            if (!cfab(i,j,k,n))
+                cfab(i,j,k,n).reset(new Cell());
+        });
+    }
+
+    if (old) {
+        // Fill level from old data
+        this->FillPatch(*old, 0, 0, state->n_comp); 
+    }
+    
+    // connect pointers to local ghost cells
+    const FabArrayBase::FB& TheFB = state->getFB(ngrow, geom.periodicity());
+    for(auto& tag : *TheFB.m_LocTags) 
+    {
+        const auto* sfab = &(state->get(tag.srcIndex));
+              auto* dfab = &(state->get(tag.dstIndex));
+        dfab->copy<RunOn::Host>(*sfab, tag.sbox, 0, tag.dbox, 0, ncomp);
+    }	
 }
 
 void 
@@ -62,38 +98,31 @@ AmrLevel::errorEst (TagBoxArray& tb,
                     int          ngrow) 
 {
     //Print() << "Tagging cells at level = " << level <<"\n";
-    
     //int tagged = 0;
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
+
+    // Tag cells for refinement
+    for (MFIter mfi(tb); mfi.isValid(); ++mfi)
     {
-        for (MFIter mfi(tb); mfi.isValid(); ++mfi)
+        const Box& box = mfi.validbox();
+        auto tagArray  = tb[mfi].array();
+        auto dataArray = (*state)[mfi].array();
+/*#ifdef _OPENMP
+#pragma omp parallel
+#endif*/
+        ParallelFor(box, [&] (int i, int j, int k)
         {
-            const Box& box = mfi.validbox();
-            auto tagArray  = tb[mfi].array();
-            auto dataArray = state[mfi].array();
-
-            //tag cells for refinement
-            ParallelFor(box, [&] (int i, int j, int k)
-            {
-                if (dataArray(i,j,k).number_of_particles >= 6) {
-                    tagArray(i,j,k) = tagval;
-                    //tagged++;
-                }
-                else {
-                    tagArray(i,j,k) = clearval;
-                }
-            });
-        }
+        // TODO: tag if overlaps with fine areas meeting criteria
+            if (i > 5 && j > 5 /*dataArray(i,j,k)->number_of_particles >= 50*/) {
+                tagArray(i,j,k) = tagval;
+                //tagged++;
+            }
+            else {
+                tagArray(i,j,k) = clearval;
+            }
+        });
     }
+    
     //Print() << "Tagged cells: " << tagged << "\n";
-}
-
-Long
-AmrLevel::countCells () const noexcept
-{
-    return grids.numPts();
 }
 
 AmrLevel::~AmrLevel ()
@@ -101,28 +130,8 @@ AmrLevel::~AmrLevel ()
     parent = 0;
 }
 
-const BoxArray&
-AmrLevel::getEdgeBoxArray (int dir) const noexcept
-{
-    BL_ASSERT(dir >=0 && dir < AMREX_SPACEDIM);
-    if (edge_grids[dir].empty()) {
-        edge_grids[dir] = grids;
-        edge_grids[dir].surroundingNodes(dir);
-    }
-    return edge_grids[dir];
-}
-
-const BoxArray&
-AmrLevel::getNodalBoxArray () const noexcept
-{
-    if (nodal_grids.empty()) {
-        nodal_grids = grids;
-        nodal_grids.surroundingNodes();
-    }
-    return nodal_grids;
-}
-
-// Interpolate from coarse level to the valid area in dest.
+// Fill an entire CellFabArray by interpolating from the coarser level
+// this comes into play when a new level of refinement appears
 void
 AmrLevel::FillFromCoarsePatch (CellFabArray& dest,
                                int       icomp,
@@ -140,81 +149,175 @@ AmrLevel::FillFromCoarsePatch (CellFabArray& dest,
     const DistributionMapping& dest_DM = dest.DistributionMap();
     AmrLevel&                  clev    = parent->getLevel(level-1);
     const Geometry&            cgeom   = clev.geom;
+    MyInterpolater*            mapper  = &my_interpolater;
 
-    Box domain_g = pdomain;
+    BoxArray crseBA(dest_BA.size());
+    Box domain_g(pdomain);
+    // DISTRIBUTION SHOULD ALREADY BE CORRECT
+    
     for (int i = 0; i < AMREX_SPACEDIM; ++i) {
         if (geom.isPeriodic(i)) {
             domain_g.grow(i,ngrow);
         }
     }
     
-    BoxArray crseBA(dest_BA.size());
-    
     for (int j = 0, N = crseBA.size(); j < N; ++j)
     {
-        const Box& bx = amrex::grow(dest_BA[j],ngrow) & domain_g;
-        crseBA.set(j, amrex::coarsen(bx, crse_ratio).grow(ngrow));
+        const Box bx = amrex::grow(dest_BA[j], ngrow) & domain_g;
+        crseBA.set(j, mapper->CoarseBox(bx, crse_ratio));
     }
-
-    // contains only data needed by interpolater
-    CellFabArray coarse(crseBA, dest_DM, ncomp, 0);
     
+    // should contain only data needed by interpolater
+    CellFabArray coarse(crseBA, dest_DM, ncomp, 0);
+        
     // ProperlyNested checks that cells only have neighbours one level coarser
     if ( level == 1 
         || ProperlyNested(crse_ratio, parent->blockingFactor(level),
-                            ngrow, dest_BA.ixType()) )
+                            ngrow, dest_BA.ixType(), mapper))
     {
-        coarse.FillPatchSingleLevel({0,0,0}, clev.state, icomp, 0, ncomp, cgeom);
+        // Filling coarse patch
+        coarse.FillPatchSingleLevel(IntVect::Zero, *clev.state, icomp, icomp, ncomp, cgeom);
     }
     else
     {
         Abort("level was not properly nested\n");
-        // TODO: FillPatch should not be necessary for finer levels.
-        // FillPatch(clev, coarse, 0, icomp, ncomp);
     }
-
-#ifdef _OPENMP
-//#pragma omp parallel if (Gpu::notInLaunchRegion())
-#endif
-    for (MFIter mfi(coarse); mfi.isValid(); ++mfi)
+    
+    for (AmrIter mfi(*this); mfi.isValid(); ++mfi)
     {
-        auto& sfab = coarse[mfi];       // source data
-        auto& dfab = dest[mfi];         // destination data
-        const Box dbox = dfab.box();    
-        const Box sbox = mfi.validbox();
-        // interpolating to dest
-        dest.interpolateTo(dfab, dbox, geom, sfab, sbox, cgeom);
+        auto& sfab = coarse[mfi];         // source data
+        auto& dfab = dest[mfi];           // destination data
+        const Box dbox = mfi.validbox();
+        
+        // interpolating to fine level
+        mapper->interp(sfab, icomp, dfab, icomp, ncomp, dbox, 
+                        crse_ratio, cgeom, geom, RunOn::Cpu);
+        
+        // clear source cells
+        Box cbox = amrex::coarsen(dbox, crse_ratio);
+        ParallelFor(cbox, ncomp, 
+        [&] (int i, int j, int k, int n) {
+            sfab(IntVect(i,j,k), n)->clear();
+        });
+    }
+}
 
-        // TODO: clear interpolated data (maybe swap during FillPatch would be in fact better)
-        /*ParallelFor(sbox, ncomp, [&] (int i, int j, int k, int n) 
-        {
-            const IntVect iv(i,j,k);
-            Cell &parent = sfab(iv);
-            
-        });*/
+// Creates fine boundary for this and coarse boundary for fine level
+void AmrLevel::constructCrseFineBdry(AmrLevel* fineLevel) 
+{
+    if (level == 0) coarse_boundary.reset();
+
+    // By default all cells are propagated
+    propagate_fab.resize(state->local_size());
+    propagate_fab.assign(propagate_fab.size(), true);
+
+    if (fineLevel == nullptr) {
+        fine_boundary.reset();
+        return;
     }
 
-    if (dest.nGrow() > 0) {
-        //dest.FillPatchTwoLevels();
-        //or dest.FillBoundary(geom.periodicity(), true);
-    }   
-}
+    const int ncomp = state->nComp();
+    const int rank = ParallelDescriptor::MyProc();
 
-const BoxArray& AmrLevel::getAreaNotToTag () noexcept
-{
-    return m_AreaNotToTag;
-}
+    // CellFabs overlapping with fine region will not be propagated
+    BoxArray grids_to_not_propagate(fineLevel->boxArray());
+    grids_to_not_propagate.coarsen(fine_ratio);
+    
+    // FINE TO THIS/COARSE BOUNDARY
 
-const Box& AmrLevel::getAreaToTag () noexcept
-{
-    return m_AreaToTag;
-}
+    Box cdomain(Domain());
+    const IntVect ngrow = state->nGrowVect();
 
-void AmrLevel::setAreaNotToTag (BoxArray& ba) noexcept
-{
-    m_AreaNotToTag = ba;
-}
+    for (int i = 0; i < AMREX_SPACEDIM; ++i) {
+        if (geom.isPeriodic(i)) {
+            cdomain.grow(i, ngrow[i]);
+        }
+    }
 
+    // propagated area
+    BoxArray crse_ba = complementIn(cdomain, grids_to_not_propagate);
+    crse_ba.grow(ngrow);
+    BoxList crse_boxes(crse_ba);
+
+    // We will only add local boxes and set which ones to propagate
+    BoxList cb_boxes; 
+	for (MFIter mfi(*state); mfi.isValid(); ++mfi) 
+    {
+        Box b = mfi.validbox();
+        if (grids_to_not_propagate.contains(b)) 
+        {
+            propagate_fab[mfi.LocalIndex()] = false;
+            cb_boxes.push_back(b);
+        }
+    }
+    cb_boxes.intersect(crse_boxes);
+    cb_boxes.simplify();
+    
+    if (cb_boxes.isEmpty()) 
+    {
+        fine_boundary.reset();
+    }
+    else
+    {
+        BoxArray cb_ba(cb_boxes);
+        DistributionMapping dmap { Vector<int>(cb_boxes.size(), rank) };
+
+        CellFabArray* new_coarse = new CellFabArray(cb_ba, dmap, ncomp, 0);
+        cb_ba.refine(fine_ratio);
+        CellFabArray* new_fine = new CellFabArray(cb_ba, dmap, ncomp, 0);
+        
+        // fine boundary of this level
+        fine_boundary.reset(new_coarse, this, new_fine, fineLevel, fineLevel);
+    }
+
+    // THIS/COARSE TO FINE BOUNDARY
+
+    const BoxList fine_boxes(fineLevel->boxArray());
+	const DistributionMapping fine_dmap = fineLevel->DistributionMap();
+    
+    Box fdomain(fineLevel->Domain());
+    for (int i = 0; i < AMREX_SPACEDIM; ++i) {
+        if (geom.isPeriodic(i)) {
+            fdomain.grow(i, ngrow[i]);
+        }
+    }
+
+    // local boxes at the coarse-to-fine boundary of fineLevel
+	BoxList fb_boxes;   
+	for (int i = 0; i < fine_boxes.size(); i++)
+	{
+        if (rank == fine_dmap[i]) 
+        {
+            Box b = amrex::grow(fine_boxes.data()[i], ngrow);
+            b &= fdomain;
+            BoxList complement = amrex::complementIn(b, fine_boxes);
+            fb_boxes.join(std::move(complement));
+        }
+	}
+    // combine boxes if possible and remove overlaps
+    fb_boxes.simplify();
+    
+    if (fb_boxes.isEmpty()) 
+    {
+        coarse_boundary.reset();
+    } 
+    else 
+    {
+        BoxArray fb_ba(fb_boxes);
+        DistributionMapping dmap { Vector<int>(fb_boxes.size(), rank) };
+
+        CellFabArray* new_fine = new CellFabArray(fb_ba, dmap, ncomp, 0);
+
+        fb_ba.coarsen(fine_ratio);
+        CellFabArray* new_coarse = new CellFabArray(fb_ba, dmap, ncomp, 0);
+        
+        // coarse boundary of fine level
+        fineLevel->coarse_boundary.reset(new_coarse, this, new_fine, fineLevel, this);
+    }
+    
+    //FabArrayBase::flushCPCache();
+}
+ 
 void AmrLevel::constructAreaNotToTag ()
 {
     if (level == 0 || !parent->useFixedCoarseGrids() || parent->useFixedUpToLevel()>level)
@@ -251,581 +354,8 @@ void AmrLevel::constructAreaNotToTag ()
     }
 }
 
-FillPatchIteratorHelper::FillPatchIteratorHelper (AmrLevel&  Amrlevel,
-                                                  CellFabArray& leveldata)
-    :
-    m_Amrlevel(Amrlevel),
-    m_leveldata(leveldata),
-    m_mfid(m_Amrlevel.level+1)
-{}
-
-FillPatchIterator::FillPatchIterator (AmrLevel& Amrlevel,
-                                      CellFabArray& leveldata)
-    :
-    MFIter(leveldata),
-    m_Amrlevel(Amrlevel),
-    m_leveldata(leveldata),
-    m_ncomp(0)
-{}
-
-FillPatchIteratorHelper::FillPatchIteratorHelper (AmrLevel&     Amrlevel,
-                                                  CellFabArray& leveldata,
-                                                  int           boxGrow,
-                                                  Real          time,
-                                                  int           icomp,
-                                                  int           ncomp)
-    :
-    m_Amrlevel(Amrlevel),
-    m_leveldata(leveldata),
-    m_mfid(m_Amrlevel.level+1),
-    m_time(time),
-    m_growsize(boxGrow),
-    m_icomp(icomp),
-    m_ncomp(ncomp)
-{
-    Initialize(boxGrow,time,icomp,ncomp);
-}
-
-FillPatchIterator::FillPatchIterator (AmrLevel&     Amrlevel,
-                                      CellFabArray& leveldata,
-                                      int           boxGrow,
-                                      Real          time,
-                                      int           icomp,
-                                      int           ncomp)
-    :
-    MFIter(leveldata),
-    m_Amrlevel(Amrlevel),
-    m_leveldata(leveldata),
-    m_ncomp(ncomp)
-{
-    Initialize(boxGrow,time,icomp,ncomp);
-}
-
-static
-bool
-NeedToTouchUpPhysCorners (const Geometry& geom)
-{
-    return geom.isAnyPeriodic() && !geom.isAllPeriodic();
-}
-
-void
-FillPatchIterator::Initialize (int  boxGrow,
-                               Real time,
-                               int  icomp,
-                               int  ncomp)
-{
-    BL_PROFILE("FillPatchIterator::Initialize");
-
-    BL_ASSERT(icomp >= 0);
-    BL_ASSERT(ncomp >= 1);
-
-    m_ncomp = ncomp;
-
-    m_fabs.define(m_leveldata.boxArray(), m_leveldata.DistributionMap(),
-		          m_ncomp, boxGrow, MFInfo(), m_leveldata.Factory());
-
-    const Geometry& geom = m_Amrlevel.Geom();
-
-    const IndexType& boxType = m_leveldata.boxArray().ixType();
-    const int level = m_Amrlevel.level;
-
-    if (level == 0)
-    {
-        FillFromLevel0(time, icomp, ncomp);
-    }
-    else
-    {
-        if (level == 1 || 
-        ProperlyNested(m_Amrlevel.crse_ratio,
-                        m_Amrlevel.parent->blockingFactor(m_Amrlevel.level),
-                        boxGrow, boxType))
-        {
-            FillFromTwoLevels(time, icomp, ncomp);
-        } else {
-            static bool first = true;
-            if (first) {
-                first = false;
-                if (ParallelDescriptor::IOProcessor() && amrex::Verbose()) {
-                    IntVect new_blocking_factor = m_Amrlevel.parent->blockingFactor(m_Amrlevel.level);
-                    new_blocking_factor *= 2;
-                    for (int j = 0; j < 10; ++j) {
-                        if (ProperlyNested(m_Amrlevel.crse_ratio,
-                                            new_blocking_factor,
-                                            boxGrow, boxType)) {
-                            break;
-                        } else {
-                            new_blocking_factor *= 2;
-                        }
-                    }
-                    amrex::Print() << "WARNING: Grids are not properly nested.  We might have to use\n"
-                                << "         two coarse levels to do fillpatch.  Consider using\n";
-                    if (new_blocking_factor < IntVect{AMREX_D_DECL(128,128,128)}) {
-                        amrex::Print() << "         amr.blocking_factor=" << new_blocking_factor << "\n";
-                    } else {
-                        amrex::Print() << "         larger amr.blocking_factor.\n";
-                    }
-                }
-            }
-
-            Print() << "    FillPatchIteratorHelper\n";
-            // This initialization sends all data needed by fill
-            FillPatchIteratorHelper* fph = 0;
-            fph = new FillPatchIteratorHelper(m_Amrlevel, m_leveldata, boxGrow, time, icomp, ncomp);
-
-#if defined(AMREX_CRSEGRNDOMP) || (!defined(AMREX_XSDK) && defined(CRSEGRNDOMP))
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-#endif
-            for (MFIter mfi(m_fabs); mfi.isValid(); ++mfi)
-            {
-                fph->fill(m_fabs[mfi],mfi.index());
-            }
-            delete fph;
-        }
-    }
-    
-    // TODO:
-    // Call hack to touch up fillPatched data.
-    // m_Amrlevel.set_preferred_boundary_values(m_fabs, icomp, 0, ncomp, time);
-}
-
-void
-FillPatchIterator::FillFromLevel0 (Real time, int icomp, int ncomp)
-{
-    Print() << "    FillFromLevel0\n";
-    BL_ASSERT(m_Amrlevel.level == 0);
-
-    CellFabArray& src = m_Amrlevel.state;
-    //src.FillBoundary();
-
-    const Geometry& geom = m_Amrlevel.geom;
-
-    m_fabs.FillPatchSingleLevel(src, icomp, icomp, ncomp, geom);
-    //amrex::FillPatchSingleLevel (m_fabs, time, smf, stime, icomp, ncomp, geom, physbcf, icomp);
-}
-
-void
-FillPatchIterator::FillFromTwoLevels (Real time, int icomp, int ncomp)
-{
-    Print() << "    FillFromTwoLevels\n";
-    int ilev_fine = m_Amrlevel.level;
-    int ilev_crse = ilev_fine-1;
-
-    BL_ASSERT(ilev_crse >= 0);
-
-    AmrLevel& fine_level = m_Amrlevel;
-    AmrLevel& crse_level = m_Amrlevel.parent->getLevel(ilev_crse);
-
-    const Geometry& geom_fine = fine_level.geom;
-    const Geometry& geom_crse = crse_level.geom;
-    
-    CellFabArray& smf_crse = crse_level.state;
-    //smf_crse.FillBoundary();
-
-    CellFabArray& smf_fine = fine_level.state;
-    //smf_fine.FillBoundary();
-
-    //m_fabs.FillPatchTwoLevels
-}
-
-void
-FillPatchIteratorHelper::Initialize (int  boxGrow,
-                                     Real time,
-                                     int  icomp,
-                                     int  ncomp)
-{
-    BL_PROFILE("FillPatchIteratorHelper::Initialize()");
-
-    BL_ASSERT(icomp >= 0);
-    BL_ASSERT(ncomp >= 1);
-    BL_ASSERT(AmrLevel::desc_lst[idx].inRange(icomp,ncomp));
-    BL_ASSERT(0 <= idx && idx < AmrLevel::state.size());
-
-    m_time         = time;
-    m_growsize     = boxGrow;
-    m_icomp        = icomp;
-    m_ncomp        = ncomp;
-
-    const int         MyProc     = ParallelDescriptor::MyProc();
-    auto&             AmrLevels  = m_Amrlevel.parent->getAmrLevels();
-    const AmrLevel&   topLevel   = *AmrLevels[m_Amrlevel.level];
-    const Box&        topPDomain = topLevel.Domain();
-    const IndexType&  boxType    = m_leveldata.boxArray().ixType(); // should be cell centered
-
-    for (int l = 0; l <= m_Amrlevel.level; ++l)
-    {
-        m_mfid[l].resize(1); 
-        m_mfid[l][0] = m_mfcd.RegisterFabArray(&AmrLevels[l]->state);
-    }
-    for (int i = 0, N = m_leveldata.boxArray().size(); i < N; ++i)
-    {
-        //
-        // A couple typedefs we'll use in the next code segment.
-        //
-        typedef std::map<int,Vector<Vector<Box> > >::value_type IntAABoxMapValType;
-
-        typedef std::map<int,Vector<Vector<Vector<FillBoxId> > > >::value_type IntAAAFBIDMapValType;
-
-        if (m_leveldata.DistributionMap()[i] != MyProc) continue;
-        //
-        // Insert with a hint since the indices are ordered lowest to highest.
-        //
-        IntAAAFBIDMapValType v1(i,Vector<Vector<Vector<FillBoxId> > >());
-
-        m_fbid.insert(m_fbid.end(),v1)->second.resize(m_Amrlevel.level+1);
-
-        IntAABoxMapValType v2(i,Vector<Vector<Box> >());
-
-        m_fbox.insert(m_fbox.end(),v2)->second.resize(m_Amrlevel.level+1);
-        m_cbox.insert(m_cbox.end(),v2)->second.resize(m_Amrlevel.level+1);
-
-        m_ba.insert(m_ba.end(),std::map<int,Box>::value_type(i,amrex::grow(m_leveldata.boxArray()[i],m_growsize)));
-    }
-
-    BoxList         tempUnfillable(boxType);
-    BoxList         unfillableThisLevel(boxType);
-    Vector<Box>     unfilledThisLevel;
-    Vector<Box>     crse_boxes;
-    Vector<IntVect> pshifts(27);
-
-    for (std::map<int,Box>::const_iterator it = m_ba.begin(), 
-         End = m_ba.end(); it != End; ++it)
-    {
-        const int  bxidx = it->first;
-        const Box& box   = it->second;
-
-        unfilledThisLevel.clear();
-        unfilledThisLevel.push_back(box);
-
-        if (!topPDomain.contains(box))
-        {
-            unfilledThisLevel.back() &= topPDomain;
-
-            if (topLevel.geom.isAnyPeriodic())
-            {
-                //
-                // May need to add additional unique pieces of valid region
-                // in order to do periodic copies into ghost cells.
-                //
-                topLevel.geom.periodicShift(topPDomain,box,pshifts);
-
-                for (const auto& iv : pshifts)
-                {
-                    Box shbox = box + iv;
-                    shbox    &= topPDomain;
-
-                    // Boxes are assumed cell centered
-                    /*if (boxType.nodeCentered())
-                    {
-                        for (int dir = 0; dir < AMREX_SPACEDIM; dir++)
-                        {
-                            if (iv[dir] > 0)
-                            {
-                                shbox.growHi(dir,-1);
-                            }
-                            else if (iv[dir] < 0)
-                            {
-                                shbox.growLo(dir,-1);
-                            }
-                        }
-                    }*/
-
-                    if (shbox.ok())
-                    {
-                        BoxList bl = amrex::boxDiff(shbox,box);
-
-                        unfilledThisLevel.insert(unfilledThisLevel.end(), bl.begin(), bl.end());
-                    }
-                }
-            }
-        }
-
-	    // cells outside physical boundaries are not included in unfilledThisLevel
-
-        bool Done = false;
-
-        Vector< Vector<Box> >&                 TheCrseBoxes = m_cbox[bxidx];
-        Vector< Vector<Box> >&                 TheFineBoxes = m_fbox[bxidx];
-        Vector< Vector< Vector<FillBoxId> > >& TheFBIDs     = m_fbid[bxidx];
-
-        for (int l = m_Amrlevel.level; l >= 0 && !Done; --l)
-        {
-            unfillableThisLevel.clear();
-
-            AmrLevel&       theAmrLevel = *AmrLevels[l];
-            CellFabArray&   theState    = theAmrLevel.state;
-            const Box&      thePDomain  = theAmrLevel.Domain();
-            const Geometry& theGeom     = theAmrLevel.geom;
-            const bool      is_periodic = theGeom.isAnyPeriodic();
-            const IntVect&  fine_ratio  = theAmrLevel.fine_ratio;
-            Vector<Box>&    FineBoxes   = TheFineBoxes[l];
-            //
-            // These are the boxes on this level contained in thePDomain
-            // that need to be filled in order to directly fill at the
-            // highest level or to interpolate up to the next higher level.
-            //
-            FineBoxes = unfilledThisLevel;
-            //
-            // Now build coarse boxes needed to interpolate to fine.
-            //
-            // If we're periodic and we're not at the finest level, we may
-            // need to get some additional data at this level in order to
-            // properly fill the CoarseBox()d versions of the fineboxes.
-            //
-            crse_boxes.clear();
-
-            for (const auto& fbx : FineBoxes)
-            {
-                crse_boxes.push_back(fbx);
-
-                if (l != m_Amrlevel.level)
-                {
-                    const Box& cbox = amrex::coarsen(fbx,fine_ratio).grow(1);
-		            crse_boxes.back() = cbox;
-
-                    if (is_periodic && !thePDomain.contains(cbox))
-                    {
-                        theGeom.periodicShift(thePDomain,cbox,pshifts);
-
-                        for (const auto& iv : pshifts)
-                        {
-                            Box shbox = cbox + iv;
-                            shbox    &= thePDomain;
-
-                            // Boxes are assumed cell centere
-                            /*if (boxType.nodeCentered())
-                            {
-                                for (int dir = 0; dir < AMREX_SPACEDIM; dir++)
-                                {
-                                    if (iv[dir] > 0)
-                                    {
-                                        shbox.growHi(dir,-1);
-                                    }
-                                    else if (iv[dir] < 0)
-                                    {
-                                        shbox.growLo(dir,-1);
-                                    }
-                                }
-                            }*/
-
-                            if (shbox.ok())
-                            {
-                                crse_boxes.push_back(shbox);
-                            }
-                        }
-                    }
-                }
-            }
-
-            Vector< Vector<FillBoxId> >& FBIDs = TheFBIDs[l];
-            Vector<Box>&             CrseBoxes = TheCrseBoxes[l];
-
-            FBIDs.resize(crse_boxes.size());
-            CrseBoxes.resize(crse_boxes.size());
-            //
-            // Now attempt to get as much coarse data as possible.
-            //
-            for (int i = 0, M = CrseBoxes.size(); i < M; i++)
-            {
-                BL_ASSERT(tempUnfillable.isEmpty());
-
-                CrseBoxes[i] = crse_boxes[i];
-
-                BL_ASSERT(CrseBoxes[i].intersects(thePDomain));
-
-                /*theState.InterpAddBox(m_mfcd) -> FillFab*/
-                
-                unfillableThisLevel.catenate(tempUnfillable);
-            }
-
-            unfillableThisLevel.intersect(thePDomain);
-
-            if (unfillableThisLevel.isEmpty())
-            {
-                Done = true;
-            }
-            else
-            {
-                unfilledThisLevel.clear();
-
-                unfilledThisLevel.insert(unfilledThisLevel.end(),
-                                         unfillableThisLevel.begin(),
-                                         unfillableThisLevel.end());
-            }
-        }
-    }
-    Cell::transfer_particles = false;
-    
-    // handles data sends and receives
-    m_mfcd.CollectData();
-}
-
-void
-FillPatchIteratorHelper::fill (CellFab& fab,
-                               int      idx)
-{
-    BL_PROFILE("FillPatchIteratorHelper::fill()");
-
-    BL_ASSERT(fab.box() == m_ba[idx]);
-
-    Vector< Vector<std::unique_ptr<CellFab> > > cfab(m_Amrlevel.level+1);
-    Vector< Vector<Box> >&                 TheCrseBoxes = m_cbox[idx];
-    Vector< Vector<Box> >&                 TheFineBoxes = m_fbox[idx];
-    Vector< Vector< Vector<FillBoxId> > >& TheFBIDs     = m_fbid[idx];
-    auto&                                  AmrLevels    = m_Amrlevel.parent->getAmrLevels();
-    //
-    // Build all coarse fabs from which we'll interpolate and
-    // fill them with coarse data as best we can.
-    //
-    for (int l = 0; l <= m_Amrlevel.level; l++)
-    {
-        CellFabArray&                      TheState  = AmrLevels[l]->state;
-        const Vector<Box>&                 CrseBoxes = TheCrseBoxes[l];
-        auto&                              CrseFabs  = cfab[l];
-        const Vector< Vector<FillBoxId> >& FBIDs     = TheFBIDs[l];
-        const int                          NC        = CrseBoxes.size();
-
-        CrseFabs.resize(NC);
-
-        Box domain_box = amrex::convert(AmrLevels[l]->Geom().Domain(), fab.box().ixType());
-        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-            if (AmrLevels[l]->Geom().isPeriodic(idim)) {
-                int n = domain_box.length(idim);
-                domain_box.grow(idim, n);
-            }
-        }
-
-        for (int i = 0; i < NC; i++)
-        {
-            BL_ASSERT(CrseBoxes[i].ok());
-            CrseFabs[i].reset(new CellFab(CrseBoxes[i],m_ncomp));
-	    }
-
-        for (int i = 0; i < NC; i++)
-        {
-            //
-            // Set to special value we'll later check
-            // to ensure we've filled the FABs at the coarse level.
-            //
-            // TODO: TheState.InterpFillFab
-        }
-    }
-    //
-    // Now work from the bottom up interpolating to next higher level.
-    //
-    for (int l = 0; l < m_Amrlevel.level; l++)
-    {
-        auto&              CrseFabs   = cfab[l];
-        AmrLevel&          TheLevel   = *AmrLevels[l];
-        CellFabArray&      TheState   = TheLevel.state;
-        const Box&         ThePDomain = TheLevel.Domain();
-        const int          NC         = CrseFabs.size();
-        // TODO: Fillboundary with periodics only should work I think?
-        TheState.FillBoundary();
-        
-        //
-        // Interpolate up to next level.
-        //
-        AmrLevel&           crseAmrLevel  = *AmrLevels[l];
-        AmrLevel&           fineAmrLevel  = *AmrLevels[l+1];
-        const IntVect&      fine_ratio    = crseAmrLevel.fine_ratio;
-        const Vector<Box>&  FineBoxes     = TheFineBoxes[l];
-        CellFabArray&       fState        = fineAmrLevel.state;
-        const Box&          fDomain       = fineAmrLevel.Domain();
-        auto&               FinerCrseFabs = cfab[l+1];
-        //const Vector<BCRec>& theBCs       = fState.getBCs();
-        const int           NF            = FineBoxes.size();
-
-        for (int ifine = 0; ifine < NF; ++ifine)
-        {
-            Vector<BCRec> bcr(m_ncomp);
-            CellFab    finefab(FineBoxes[ifine],m_ncomp);
-            CellFab    crsefab(amrex::coarsen(finefab.box(),fine_ratio).grow(0),m_ncomp);
-            
-            // TODO: get rid off copies:
-
-            // Fill crsefab from m_cbox via copy on intersect.
-            for (int j = 0; j < NC; j++) {
-                crsefab.copy<RunOn::Host>(*CrseFabs[j]);
-	        }
-            
-            // TODO: Interpolate up to fine patch.
-            // m_map->interp
-
-            // Copy intersect finefab into next level m_cboxes.
-            for (int j = 0, K = FinerCrseFabs.size(); j < K; ++j) {
-                FinerCrseFabs[j]->copy<RunOn::Host>(finefab);
-            }
-        }
-
-        CrseFabs.clear();
-    }
-    //
-    // Now for the finest level stuff.
-    //
-    CellFabArray&      FineState      = m_Amrlevel.state;
-    const Box&         FineDomain     = m_Amrlevel.Domain();
-    const Geometry&    FineGeom       = m_Amrlevel.geom;
-    auto&              FinestCrseFabs = cfab[m_Amrlevel.level];
-    //
-    // Copy intersect coarse into destination fab.
-    //
-    for (int i = 0, N = FinestCrseFabs.size(); i < N; ++i) {
-        fab.copy<RunOn::Host>(*FinestCrseFabs[i], 0, 0, m_ncomp);
-    }
-    // TODO: another periodic FillBoundary
-    /*if (FineGeom.isAnyPeriodic() && !FineDomain.contains(fab.box()))
-    {
-        Vector<IntVect> pshifts(27);
-
-        FineGeom.periodicShift(FineDomain,fab.box(),pshifts);
-
-        for (int i = 0, N = FinestCrseFabs.size(); i < N; i++)
-        {
-            for (const auto& iv : pshifts)
-            {
-                fab.shift(iv);
-
-                Box src_dst = FinestCrseFabs[i]->box() & fab.box();
-                src_dst    &= FineDomain;
-
-                if (src_dst.ok())
-                    fab.copy<RunOn::Host>(*FinestCrseFabs[i],src_dst, 0, 0, m_ncomp);
-
-                fab.shift(-iv);
-            }
-        }
-    }*/
-    //
-    // No longer need coarse data at finest level.
-    //
-    FinestCrseFabs.clear();
-}
-
-static
-bool
-HasPhysBndry (const Box&      b,
-              const Box&      dmn,
-              const Geometry& geom)
-{
-    for (int i = 0; i < AMREX_SPACEDIM; i++)
-    {
-        if (!geom.isPeriodic(i))
-        {
-            if (b.smallEnd(i) < dmn.smallEnd(i) || b.bigEnd(i) > dmn.bigEnd(i))
-            {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
 void
 AmrLevel::FillPatch (AmrLevel&  Amrlevel,
-		             CellFabArray& leveldata,
                      int        boxGrow,
                      int        icomp,
                      int        ncomp)
@@ -833,24 +363,29 @@ AmrLevel::FillPatch (AmrLevel&  Amrlevel,
     BL_ASSERT(boxGrow <= leveldata.nGrow());
     BL_ASSERT(icomp >= 0);
     BL_ASSERT(ncomp >= 1);
-    BL_ASSERT(AmrLevel::desc_lst[idx].inRange(icomp,ncomp));
     BL_ASSERT(0 <= idx && idx < AmrLevel::state.size());
 
-    Print() << "Filling Patch with FillPatchIterator\n";
-    // fill leveldata with data from Amrlevel
-
-    CellFabArray& old_data = Amrlevel.getData();
+    CellFabArray& leveldata = *state;
+    CellFabArray& old = Amrlevel.getCells();
     const Geometry& geom = Amrlevel.Geom();
     const IndexType& boxType = leveldata.boxArray().ixType();
-    const int level = Amrlevel.level;
+    const int level = Amrlevel.Level();
 
+    Print() << "Filling Patch Level " << level << "\n";
     if (level == 0)
     {
-        leveldata.FillPatchSingleLevel({0,0,0}, old_data, icomp, icomp, ncomp, geom);
+        leveldata.FillPatchSingleLevel(IntVect::Zero, old, icomp, icomp, ncomp, geom);
+
+        // TODO: should also take averages from fine levels
+        if (level != parent->finestLevel()) 
+        {
+            //leveldata.AverageFromFineLevel();
+        }
     }
-    else if (level == 1 || ProperlyNested(Amrlevel.crse_ratio,
-                                        Amrlevel.parent->blockingFactor(Amrlevel.level),
-                                        boxGrow, boxType))
+    else if (level == 1 || 
+            ProperlyNested(Amrlevel.crse_ratio,
+                           Amrlevel.parent->blockingFactor(level),
+                           boxGrow, boxType, &my_interpolater))
     {
         Print() << "    FillFromTwoLevels\n";
         AmrLevel& fine_level = Amrlevel;
@@ -859,95 +394,126 @@ AmrLevel::FillPatch (AmrLevel&  Amrlevel,
         const Geometry& geom_fine = fine_level.geom;
         const Geometry& geom_crse = crse_level.geom;
         
-        CellFabArray& coarse = crse_level.state;
-        CellFabArray& fine = fine_level.state;
-        //smf_crse.FillBoundary();
-        //smf_fine.FillBoundary();
+        CellFabArray& coarse = *crse_level.state;
+        CellFabArray& fine = *fine_level.state;
 
         leveldata.FillPatchTwoLevels(coarse, fine, icomp, icomp, ncomp, 
                                      geom_crse, geom_fine, Amrlevel.crse_ratio);
     }
-    else Print() << "FillPatch failed!!!\n";
-
-    //FillPatchIterator fpi(Amrlevel, leveldata, boxGrow, time, icomp, ncomp);
-    //const CellFabArray& mf_fillpatched = fpi.get_mf();
-    //amrex::Copy(leveldata, mf_fillpatched, icomp, icomp, ncomp, boxGrow);
+    else Abort("FillPatch failed!!!\n");
 }
 
-// fill an entire CellFabArray by interpolating from the coarser level
-// this comes into play when a new level of refinement appears
-/*void
-AmrLevel::FillCoarsePatch (CellFabArray& fine, int icomp, int ncomp, int ngrow)
+void
+AmrLevel::BoundaryContainer::reset(CellFabArray* new_coarse, AmrLevel* coarse_parent, 
+                                   CellFabArray* new_fine, AmrLevel* fine_parent,
+                                   AmrLevel* source_level) noexcept
 {
-    int lev = Level();
+    coarse.reset(new_coarse);
+    fine.reset(new_fine);
 
-    Print() << "Interpolate to: " << lev << "\n";
-    CellFabArray& coarse = parent->getLevel(lev-1).getData();
-    const BoxArray& ba = fine.boxArray();
-    const DistributionMapping& dm = fine.DistributionMap();
+    src = source_level;
 
-    const Geometry &fine_geom = Geom();
-    const Geometry &coarse_geom = parent->Geom(lev-1);
+    if (coarse) connect_cells(*coarse, coarse_parent);
+    if (fine)   connect_cells(*fine, fine_parent);
+}
 
-    IntVect ngrow{0,0,0}; // not adding ghost data for now
-    IntVect ratio = parent->refRatio(lev-1);
+void
+AmrLevel::BoundaryContainer::connect_cells(CellFabArray& bndry_data, AmrLevel* parent)
+{
+    int ncomp = bndry_data.nComp();
+    CellFabArray& all_cells = parent->getCells();
 
-    const Box &fine_domain = fine_geom.Domain();
+    // create tags for copying
+    const FabArrayBase::CPC &cpc = bndry_data.getCPC(
+        bndry_data.nGrowVect(), all_cells, all_cells.nGrowVect(), parent->geom.periodicity()
+    );
+    /*const FabArrayBase::CPC &cpc = all_cells.getCPC(
+        all_cells.nGrowVect(), bndry_data, IntVect::Zero, parent->geom.periodicity()
+    );*/
 
-    // make an array of coarsened boxes corresponding to fine boxes
-    BoxArray ba_crse_patch(ba.size());
-    for (int i = 0, N = ba.size(); i < N; ++i)
+    // connecting local ghost cells to parent cells
+    for (auto &tag : *cpc.m_LocTags)
     {
-        Box bx = amrex::grow(ba[i], ngrow);
-        bx &= fine_domain;
-
-        ba_crse_patch.set(i, bx.coarsen(ratio));
-    }
-
-#ifdef _OPENMP
-#pragma omp parallel if (Gpu::notInLaunchRegion())
-#endif
-    for (MFIter mfi(ba_crse_patch, dm); mfi.isValid(); ++mfi)
-    {
-        auto& sfab = coarse[mfi];       // source data
-        auto& dfab = fine[mfi];         // destination data
-        const Box dbox = dfab.box();    // this box is grown by 1
-        const Box sbox = mfi.validbox();
-
-        // copying particles to fine cells
-        For(sbox, [&] (int i, int j, int k) 
+        const auto* sfab = &(all_cells.get(tag.srcIndex));
+              auto* dfab = &(bndry_data.get(tag.dstIndex));
+        //Print() << "copy: " << tag.sbox << " -> " << tag.dbox << "\n";
+        dfab->copy<RunOn::Host>(*sfab, tag.sbox, 0, tag.dbox, 0, ncomp);
+        
+        /*auto src_array = all_cells.array(tag.dstIndex);
+        auto data_array = data.array(tag.srcIndex);
+        
+        //if (parent->level > 0) continue;
+        Print() << "  " << tag.dbox << " -> " << tag.sbox << "\n";
+        Dim3 offset = (tag.sbox.smallEnd() - tag.dbox.smallEnd()).dim3();
+        
+        Print() << "  " << offset << "\n";
+        //continue;
+        
+        ParallelFor(tag.sbox, ncomp, [&] (int i, int j, int k, int n) 
         {
-            const IntVect iv(i,j,k);
-            Cell &parent = sfab(iv);
-            
-            for (uint i = 0; i < parent.number_of_particles; i++)
-            {
-                auto& particle = parent.particles[i];
-                // get the new location corresponding to fine geometry
-                IntVect new_iv = fine_geom.CellIndex(particle.data());
-
-                dfab(new_iv).particles.push_back(particle);
-                dfab(new_iv).number_of_particles++;
+            // connecting pointers
+            auto& p = data_array(i,j,k,n);
+            auto& src = src_array(i+offset.x, j+offset.y, k+offset.z, n);
+            if(!p) {
+                p = src;
+                //p->number_of_particles = 11;
+                //Print() << "connect " << IntVect{i,j,k} << ", " << p->number_of_particles << "\n";
             }
-
-            // clear for now
-            parent.particles.clear();
-            parent.number_of_particles = 0;
-        });
+            //else src = p;
+        });*/
     }
-}*/
+} 
 
-/*void
-AmrLevel::FillPatchAdd (AmrLevel&  Amrlevel,
-                        CellFabArray& leveldata,
-                        int        boxGrow,
-                        Real       time,
-                        int        icomp,
-                        int        ncomp)
+void
+AmrLevel::FillCoarseToFine()
 {
-    BL_ASSERT(boxGrow <= leveldata.nGrow());
+    if (!coarse_boundary.fine) return;
+    //Print() << "Fill " << level-1 << "->" << level << "\n";
 
-    FillPatchIterator fpi(Amrlevel, leveldata, boxGrow, time, icomp, ncomp);
-    const CellFabArray& mf_fillpatched = fpi.get_mf();
-    amrex::Add(leveldata, mf_fillpatched, icomp, icomp, ncomp, boxGrow);
-}*/
+    CellFabArray* fine     = coarse_boundary.fine.get();
+    CellFabArray* coarse   = coarse_boundary.coarse.get();
+    AmrLevel* coarse_level = coarse_boundary.src;
+
+    const int ncomp        = fine->nComp();
+    const IntVect& ratio   = coarse_level->fineRatio();
+    const Geometry& cgeom  = coarse_level->Geom();
+    const Geometry& fgeom  = this->Geom();
+    MyInterpolater* mapper = &my_interpolater;
+
+    for (MFIter mfi(*fine); mfi.isValid(); ++mfi)
+    {
+        auto& sfab = (*coarse)[mfi];
+        auto& dfab = (*fine)[mfi];
+        
+        //Print() << "  " << sfab.box() << "->" << dfab.box() << "\n";
+        // interpolate from coarse to fine cells
+        mapper->interp(sfab, 0, dfab, 0, ncomp, mfi.validbox(), 
+                        ratio, cgeom, fgeom, RunOn::Cpu);
+    }
+}
+
+void
+AmrLevel::FillFineToCoarse()
+{
+    if (!fine_boundary.coarse) return;
+    //Print() << "Fill " << level+1 << "->" << level << "\n";
+    CellFabArray* fine   = fine_boundary.fine.get();
+    CellFabArray* coarse = fine_boundary.coarse.get();
+    AmrLevel* fine_level = fine_boundary.src;
+
+    const int ncomp        = coarse->nComp();
+    const IntVect& ratio   = this->fineRatio();
+    const Geometry& cgeom  = this->Geom();
+    const Geometry& fgeom  = fine_level->Geom();
+    MyInterpolater* mapper = &my_interpolater;
+
+    for (MFIter mfi(*fine); mfi.isValid(); ++mfi)
+    {
+        auto& sfab = (*fine)[mfi];
+        auto& dfab = (*coarse)[mfi];
+        
+        //Print() << "  " << sfab.box() << "->" << dfab.box() << "\n";
+        mapper->average(dfab, 0, sfab, 0, ncomp, mfi.validbox(), 
+                        ratio, cgeom, fgeom, RunOn::Cpu);
+    }
+}

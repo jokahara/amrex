@@ -58,6 +58,12 @@ public:
 		*this = c;
 	}
 
+	// move constructor
+	Cell(Cell &&c) {
+		particles.swap(c.particles);
+		number_of_particles = particles.size();
+	}
+
 	Cell& operator=(const Cell &c) {
 		number_of_particles = c.number_of_particles;
 		particles = c.particles;
@@ -71,7 +77,6 @@ public:
 			particles.push_back(c.particles[i]);
 		}
 		number_of_particles = particles.size();
-		
 		return *this;
 	}
 
@@ -85,7 +90,13 @@ public:
 	// reserves space for particle data coming over MPI.
 	void resize()
 	{
-		this->particles.resize(this->number_of_particles);
+		particles.resize(this->number_of_particles);
+	}
+
+	void clear()
+	{
+		particles.clear();
+		number_of_particles = 0;
 	}
 };
 

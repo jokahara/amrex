@@ -25,11 +25,12 @@
 */
 using namespace amrex;
 
+//TODO: namespace Amr {
+
 class AmrLevel;
 
 class Amr : public AmrCore
 {
-  typedef std::multimap< std::pair<int, int>, double >  BoundaryPointList;
 
 public:
     //! The constructor.
@@ -41,18 +42,17 @@ public:
     Amr& operator= (const Amr& rhs) = delete;
 
     void InitAmr ();
+    
+    //! Initialize coarsest level.
+    void defBaseLevel (const BoxArray* lev0_grids = 0, const Vector<int>* pmap = 0);
 
-    //! Init level 0 after construction. Must be called before timestepping.
-    virtual void initBaseLevel (const BoxArray* lev0_grids = 0, const Vector<int>* pmap = 0);
-
-    //! Define and initialize refined levels. Must be called after initBaseLevel.
-    void initFineLevels () { bldFineLevels(); };
+    //! Build refined levels. Must be called after initBaseLevel.
+    void bldFineLevels ();
 
     //! The destructor.
     virtual ~Amr ();
 
-    //! Init data after construction. Must be called before timestepping.
-    // virtual void init (Real strt_time, Real stop_time);
+    void FillAllBoundaries();
 
     static void Initialize ();
     static void Finalize ();
@@ -85,75 +85,6 @@ public:
 
     const Vector<BoxArray>& getInitialBA() noexcept;
 
-    /**
-    * \brief Specialized version:
-    * Define BoundaryPointLists that give the intersections
-    *    of the external geometry with constant (i,k) and (j,k)
-    * These are defined at the coarsest level indexing only.
-    */
-    void setBoundaryGeometry(BoundaryPointList& IntersectLoX,
-                             BoundaryPointList& IntersectHiX,
-                             BoundaryPointList& IntersectLoY,
-                             BoundaryPointList& IntersectHiY) noexcept
-    {
-        intersect_lox = IntersectLoX;
-        intersect_hix = IntersectHiX;
-        intersect_loy = IntersectLoY;
-        intersect_hiy = IntersectHiY;
-    };
-
-    /**
-    * \brief More general version:
-    * Define BoundaryPointLists that give the intersections
-    *    of the external geometry with constant (i,k),(j,k)
-    *    and (i,j).
-    * These are defined at the coarsest level indexing only.
-    */
-    void setBoundaryGeometry(BoundaryPointList& IntersectLoX,
-                             BoundaryPointList& IntersectHiX,
-                             BoundaryPointList& IntersectLoY,
-                             BoundaryPointList& IntersectHiY,
-                             BoundaryPointList& IntersectLoZ,
-                             BoundaryPointList& IntersectHiZ) noexcept
-    {
-        intersect_lox = IntersectLoX;
-        intersect_hix = IntersectHiX;
-        intersect_loy = IntersectLoY;
-        intersect_hiy = IntersectHiY;
-        intersect_loz = IntersectLoZ;
-        intersect_hiz = IntersectHiZ;
-    };
-
-    BoundaryPointList& getIntersectLoX() noexcept
-    {
-        return intersect_lox;
-    };
-    BoundaryPointList& getIntersectHiX() noexcept
-    {
-        return intersect_hix;
-    };
-    BoundaryPointList& getIntersectLoY() noexcept
-    {
-        return intersect_loy;
-    };
-    BoundaryPointList& getIntersectHiY() noexcept
-    {
-        return intersect_hiy;
-    };
-    BoundaryPointList& getIntersectLoZ() noexcept
-    {
-        return intersect_loz;
-    };
-    BoundaryPointList& getIntersectHiZ() noexcept
-    {
-        return intersect_hiz;
-    };
-
-#ifdef AMREX_PARTICLES
-    //! Redistribute particles
-    void RedistributeParticles ();
-#endif
-
     void InstallNewDistributionMap (int lev, const BoxArray& newba, const DistributionMapping& newdm);
 
 
@@ -167,19 +98,19 @@ protected:
     void initialInit (const BoxArray* lev0_grids = 0, const Vector<int>* pmap = 0);
     //! Check for valid input.
     void checkInput ();
-    //! Define and initialize coarsest level.
-    void defBaseLevel (const BoxArray* lev0_grids = 0, const Vector<int>* pmap = 0);
-    //! Define and initialize refined levels.
-    void bldFineLevels ();
     //! Rebuild grid hierarchy finer than lbase.
     void regrid (int  lbase, bool initial = false);
     //! Define new grid locations (called from regrid) and put into new_grids.
-    void grid_places (int               lbase,
-                      int&              new_finest,
-                      Vector<BoxArray>& new_grids);
+    void MakeGrids (int               lbase,
+                    int&              new_finest,
+                    Vector<BoxArray>& new_grids);
+
+    void MakeDistributionMaps (int lbase, int new_finest, 
+                               Vector<DistributionMapping>& dmap, 
+                               Vector<BoxArray>& grids);
 
     //! Used if loadbalance_with_workestimates is set true 
-    DistributionMapping makeLoadBalanceDistributionMap (int lev, const BoxArray& ba) const;
+    //DistributionMapping makeLoadBalanceDistributionMap (int lev, const BoxArray& ba) const;
     void LoadBalanceLevel0 ();
 
     // Make a new level using provided BoxArray and DistributionMapping and
@@ -214,40 +145,27 @@ protected:
     BoxArray GetAreaNotToTag (int lev);
     void ManualTagsPlacement (int lev, TagBoxArray& tags, const Vector<IntVect>& bf_lev);
 
-    //! Do a single timestep on level L.
-    /*virtual void timeStep (int  level,
-                           Real time,
-                           int  iteration,
-                           int  niter,
-                           Real stop_time);*/
-
     //
     // The data ...
     //
-    std::string      regrid_grids_file;   //!< Grids file that will bypass regridding.
-    std::string      initial_grids_file;  //!< Grids file that will bypass regridding only at initialization.
+    std::string     regrid_grids_file;   //!< Grids file that will bypass regridding.
+    std::string     initial_grids_file;  //!< Grids file that will bypass regridding only at initialization.
     Vector<std::unique_ptr<AmrLevel> > amr_level;    //!< Vector of levels
 
-    bool             isPeriodic[AMREX_SPACEDIM];  //!< Domain periodic?
-    Vector<int>      regrid_int;      //!< Interval between regridding.
+    bool            isPeriodic[AMREX_SPACEDIM];  //!< Domain periodic?
+    Vector<int>     regrid_int;      //!< Interval between regridding.
 
-    int              which_level_being_advanced; //!< Only >=0 if we are in Amr::timeStep(level,...)
+    int             which_level_being_advanced; //!< Only >=0 if we are in Amr::timeStep(level,...)
 
-    bool             abort_on_stream_retry_failure;
-    int              stream_max_tries;
-    int              loadbalance_with_workestimates;
-    int              loadbalance_level0_int;
-    Real             loadbalance_max_fac;
+    bool            abort_on_stream_retry_failure;
+    int             stream_max_tries;
+    int             loadbalance_with_workestimates;
+    int             loadbalance_level0_int;
+    Real            loadbalance_max_fac;
 
-public:
-    BoundaryPointList intersect_lox;
-    BoundaryPointList intersect_loy;
-    BoundaryPointList intersect_loz;
-    BoundaryPointList intersect_hix;
-    BoundaryPointList intersect_hiy;
-    BoundaryPointList intersect_hiz;
+    int             n_comp;
+    IntVect         n_grow;
 
-protected:
     //
     // Static class members.  Set defaults in Initialize()!!!
     //
@@ -257,8 +175,6 @@ protected:
     //! Array of BoxArrays read in to externally define grid hierarchy at each regrid
     static Vector<BoxArray> regrid_ba;
 
-    int n_comp;
-    IntVect n_grow;
 };
 
 #endif /*_Amr_H_*/

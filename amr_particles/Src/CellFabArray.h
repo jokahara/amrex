@@ -5,12 +5,16 @@
 #include <AMReX_FabFactory.H>
 #include <AMReX_MultiFab.H>
 #include <AMReX_Periodicity.H>
-#include <AMReX_Interpolater.H>
+
+#include "Interpolater.h"
 #include "Cell.h"
 
 using namespace amrex;
-using CellFab = BaseFab<Cell>;
+using CellFab = BaseFab< std::shared_ptr<Cell> >;
 using CellFabFactory = DefaultFabFactory<CellFab>;
+
+// Global interpolater 
+extern MyInterpolater my_interpolater;
 
 class CellFabArray : public FabArray<CellFab>
 {
@@ -47,7 +51,17 @@ public:
     CellFabArray (const CellFabArray& rhs, MakeType maketype, int scomp, int ncomp);
 
     //! The destructor -- deletes all FABs in the array.
-    ~CellFabArray () {};
+    ~CellFabArray () {
+        /*for (MFIter mfi(*this), mfi.isValid(), ++mfi)
+        {
+            auto arr = array(mfi);
+            for (size_t i = 0; i < arr.size(); i++)
+            {
+                
+            }    
+        }*/
+        
+    };
 
     bool is_local(IntVect loc) {
         for (MFIter mfi(*this); mfi.isValid(); ++mfi) {
@@ -85,7 +99,13 @@ public:
         return *theFB.m_LocTags;
     }
 
-    // Fills ghost cells of this CellFabArray
+    /* Fills in the boundary regions of each FAB in the FabArray.  
+    * If cross=true, corner cells are not filled.
+    * If the length of periodic is provided, periodic boundaries are
+    * also filled.  Note that FabArray itself does not contains
+    * any periodicity information. FillBoundary expects that its 
+    * cell-centered version of its BoxArray is non-overlapping.
+    */
     void FillBoundary (bool cross = false);
     void FillBoundary (const Periodicity& period, bool cross = false);
     void FillBoundary (const IntVect& nghost, const Periodicity& period, bool cross = false);
@@ -104,7 +124,12 @@ public:
                               bool cross=false, bool enforce_periodicity_only=false);
     void FillBoundary_finish ();
 
-    // Copies from data from src to this CellFabArray
+    /**
+    * This function copies data from src to this FabArray. Each FAB
+    * in src is intersected with all FABs in this FabArray and a copy
+    * is performed on the region of intersection.  The intersection
+    * is restricted to the valid regions.
+    */
     inline void ParallelCopy (CellFabArray& src,
                         int src_comp, int dest_comp, int num_comp,
                         const Periodicity& period = Periodicity::NonPeriodic(),
@@ -127,6 +152,10 @@ public:
                         CpOp op = FabArrayBase::COPY,
                         const FabArrayBase::CPC* a_cpc = nullptr);
 
+    /*void ParallelCopy_local (const CPC& thecpc, CellFabArray const& src,
+                            int scomp, int dcomp, int ncomp, CpOp op) 
+    { PC_local_cpu(thecpc, src, scomp, dcomp, ncomp, op); }*/
+
     inline void FillPatchSingleLevel (CellFabArray& src,
                                int scomp, int dcomp, int ncomp,
                                const Geometry& geom)
@@ -142,28 +171,15 @@ public:
                              const Geometry& cgeom, const Geometry& fgeom,
                              const IntVect& ratio);
 
-    // Used for interpolating coarse data to finer level.
-    void interpolateTo(CellFab& dfab, const Box& dbox, const Geometry& fgeom,
-                       const CellFab& sfab, const Box& sbox, const Geometry& cgeom) 
-    {
-        // copying particles to fine cells
-        ParallelFor(sbox, n_comp, [&] (int i, int j, int k, int n) 
-        {
-            const IntVect iv(i,j,k);
-            const Cell &parent = sfab(iv, n);
-            
-            for (uint i = 0; i < parent.number_of_particles; i++)
-            {
-                auto& particle = parent.particles[i];
-                // get the new location corresponding to fine geometry
-                IntVect new_iv = fgeom.CellIndex(particle.data());
+    /*void FillCoarseToFine (CellFabArray& coarse,
+                           int scomp, int dcomp, int ncomp,
+                           const Geometry& cgeom, const Geometry& fgeom,
+                           const IntVect& ratio);
 
-                // add particles to new locations
-                dfab(new_iv).particles.push_back(particle);
-                dfab(new_iv).number_of_particles++;
-            }
-        });
-    }
+    void FillFineToCoarse (CellFabArray& fine,
+                           int scomp, int dcomp, int ncomp,
+                           const Geometry& cgeom, const Geometry& fgeom,
+                           const IntVect& ratio);*/
 
 private:
     typedef FabArrayBase::CopyComTagsContainer CopyComTagsContainer;
@@ -185,10 +201,6 @@ private:
     void PC_local_cpu (const CPC& thecpc, CellFabArray const& src,
                         int scomp, int dcomp, int ncomp, CpOp op);
                         
-    // Swaps vector pointers, instead of copying. Much faster than PC_local_cpu.
-    void PC_local_swap_cpu (const CPC& thecpc, CellFabArray& src,
-                            int scomp, int dcomp, int ncomp);
-
 };
 
 
@@ -199,11 +211,11 @@ CellFabArray::EstimateWork (MultiFab& mf)
         auto& mfab = mf[mfi];
         auto& sfab = get(mfi);
         auto box = mfi.validbox();
-
+        
         ParallelFor(box, [&] (int i, int j, int k)
         {
             IntVect idx{i,j,k};
-            mfab(idx) = sfab(idx).number_of_particles;
+            mfab(idx) = sfab(idx)->number_of_particles;
         });
     }
 }
@@ -296,7 +308,7 @@ CellFabArray::FillPatchSingleLevel (amrex::IntVect const& nghost,
                                     const Geometry& geom)
 {
     BL_PROFILE("FillPatchSingleLevel");
-
+    Print() << "FillPatchSingleLevel\n";
     Periodicity period = geom.periodicity();
     
     if (this != &src or scomp != dcomp) {
@@ -304,6 +316,8 @@ CellFabArray::FillPatchSingleLevel (amrex::IntVect const& nghost,
         // ghost cells are ignored for now
         const CPC& cpc = getCPC(nghost, src, nghost, period);   
 
+    if (cpc.m_RcvTags->size() > 0 || cpc.m_SndTags->size() > 0)
+    {
         Cell::transfer_particles = false;
         ParallelCopy(src, scomp, dcomp, ncomp, period, FabArrayBase::COPY, &cpc);
 
@@ -318,93 +332,14 @@ CellFabArray::FillPatchSingleLevel (amrex::IntVect const& nghost,
                 [&] (int ii, int jj, int kk, int n) noexcept
                 {
                     const IntVect idx{ii,jj,kk};
-                    dfab(idx, n+dcomp).resize();
+                    dfab(idx, n+dcomp)->resize();
                 });
             }
         }
-
+    }
         Cell::transfer_particles = true;
         ParallelCopy(src, scomp, dcomp, ncomp, period, FabArrayBase::COPY, &cpc);
     }
-    
-    // Finishing by filling ghost cells
-    /*Cell::transfer_particles = false;
-    FillBoundary(dcomp, ncomp, n_grow, period);
-
-    for (auto const& kv : get_receive_tags())
-    {
-        for (auto const& tag : kv.second)
-        {
-            const auto& bx = tag.dbox;
-            auto dfab = this->array(tag.dstIndex);
-            amrex::Loop( bx, ncomp,
-            [&] (int ii, int jj, int kk, int n) noexcept
-            {
-                dfab(ii, jj, kk, n+dcomp).resize();
-            });
-        }
-    }
-
-    Cell::transfer_particles = true;
-    FillBoundary(dcomp, ncomp, n_grow, period);*/
-}
-
-// Fill this with data from coarse and fine
-inline void
-CellFabArray::FillPatchTwoLevels (CellFabArray& coarse, CellFabArray& fine, 
-                                  int scomp, int dcomp, int ncomp,
-                                  const Geometry& cgeom, const Geometry& fgeom,
-                                  const IntVect& ratio)
-{
-	BL_PROFILE("FillPatchTwoLevels");
-
-    IntVect const& ngrow = nGrowVect(); // only grow boundaries?
-	Interpolater* mapper = &cell_cons_interp;
-
-	if (ngrow.max() > 0 || getBDKey() != fine.getBDKey())
-	{
-	    const InterpolaterBoxCoarsener& coarsener = mapper->BoxCoarsener(ratio);
-
-	    Box fdomain = fgeom.Domain();
-	    fdomain.convert(boxArray().ixType());
-	    Box fdomain_g(fdomain);
-	    for (int i = 0; i < AMREX_SPACEDIM; ++i) {
-            if (fgeom.isPeriodic(i)) {
-                fdomain_g.grow(i, ngrow[i]);
-            }
-	    }
-
-        // Fill patch info (for ghost cells)
-	    const FabArrayBase::FPinfo& fpc 
-        = FabArrayBase::TheFPinfo(fine, *this, fdomain_g, ngrow, coarsener,
-                                  amrex::coarsen(fgeom.Domain(),ratio), nullptr);
-                                  
-	    if ( ! fpc.ba_crse_patch.empty())
-	    {
-            //CellFabArray coarse_patch(fpc.ba_crse_patch, fpc.dm_crse_patch, ncomp, 0);
-            //coarse_patch.FillPatchSingleLevel(coarse, scomp, 0, ncomp, cgeom);
-            
-#ifdef _OPENMP
-#pragma omp parallel if (Gpu::notInLaunchRegion())
-#endif
-            for (MFIter mfi(fpc.ba_crse_patch, fpc.dm_crse_patch); mfi.isValid(); ++mfi)
-            {
-                auto& sfab = coarse[mfi];
-                int li = mfi.LocalIndex();
-                int gi = fpc.dst_idxs[li];
-                auto& dfab = (*this)[gi];
-                const Box& dbx = fpc.dst_boxes[li] & dfab.box();
-                Print() << "interp: " << sfab.box() << " -> " << dbx << "\n";
-
-                //interpolate to fine box
-
-                //interp(sfab, 0, dfab, dcomp, ncomp, dbx, ratio, cgeom, fgeom, RunOn::Gpu);
-            }
-	    }
-	}
-
-    // fill from fine data
-	FillPatchSingleLevel(ngrow, fine, scomp, dcomp, ncomp, fgeom);
 }
 
 #endif
