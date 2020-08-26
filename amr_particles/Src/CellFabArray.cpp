@@ -17,6 +17,7 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
     fb_period = period;
 
     fb_recv_reqs.clear();
+    fb_send_reqs.clear();
 
     bool work_to_do;
     if (enforce_periodicity_only) {
@@ -25,15 +26,16 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
 	    work_to_do = nghost.max() > 0;
     }
     if (!work_to_do) return;
-
+    
     // contains information on what cells to send
     const FB& TheFB = getFB(nghost, period, cross, enforce_periodicity_only);
-
-    if (ParallelContext::NProcsSub() == 1)
+    fill_boundary_tags = &TheFB;
+    
+    // Ignoring local copies here because local boundary 
+    // cells should already be connected by shared_ptr 
+    /*if (ParallelContext::NProcsSub() == 1)
     {
-        //
         // There can only be local work to do.
-        //
 	    int N_locs = (*TheFB.m_LocTags).size();
         if (N_locs == 0) return;
 #ifdef AMREX_USE_GPU
@@ -44,11 +46,11 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
         else
 #endif
         {
-            //FB_local_copy_cpu(TheFB, scomp, ncomp); 
+            FB_local_copy_cpu(TheFB, scomp, ncomp); 
         }
 
         return;
-    }
+    }*/
 
 #ifdef BL_USE_MPI
 
@@ -70,7 +72,7 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
     
     // Post receives
     if (N_rcvs > 0) {
-        PostReceives(*TheFB.m_RcvTags /*get_receive_tags()*/, fb_send_reqs,
+        PostReceives(*TheFB.m_RcvTags, fb_recv_reqs,
                     scomp, ncomp, SeqNum);
         fb_recv_stat.resize(N_rcvs);
     }
@@ -82,8 +84,12 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
                     scomp, ncomp, SeqNum); 
     }
 
+
+    // Ignoring local copies here because local boundary 
+    // cells should already be connected by shared_ptr 
+
     // Do the local work.  Hope for a bit of communication/computation overlap.
-    if (N_locs > 0)
+    /*if (N_locs > 0)
     {
 #ifdef AMREX_USE_GPU
         if (Gpu::inLaunchRegion())
@@ -92,17 +98,17 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
         }
         else
 #endif
-            //FB_local_copy_cpu(TheFB, scomp, ncomp);
-	}
+            FB_local_copy_cpu(TheFB, scomp, ncomp);
+	}*/
+    
 #endif
-    return;
 }
 
 
 #ifdef BL_USE_MPI
 void
 CellFabArray::PostSends (const MapOfCopyComTagContainers& m_SndTags,
-                        Vector<MPI_Request> send_reqs,
+                        Vector<MPI_Request>& send_reqs,
                         int icomp, int ncomp, int SeqNum)
 {
 
@@ -119,7 +125,7 @@ CellFabArray::PostSends (const MapOfCopyComTagContainers& m_SndTags,
 
     const int nsend = send_rank.size();
 
-    MPI_Comm comm = ParallelContext::CommunicatorSub();
+    MPI_Comm comm = ParallelDescriptor::Communicator();
     // Get mpi datatypes:
 /*#ifdef _OPENMP
 #pragma omp parallel for
@@ -174,20 +180,19 @@ CellFabArray::PostSends (const MapOfCopyComTagContainers& m_SndTags,
         
         MPI_Type_commit(&send_datatype);
 
-        const int rank = ParallelContext::global_to_local_rank(send_rank[j]);
+        //const int rank = ParallelContext::global_to_local_rank(send_rank[j]);
 
         MPI_Isend(
             addresses[0],
             1,
             send_datatype,
-            rank,
+            send_rank[j],
             SeqNum,
             comm,
             &send_reqs[j]);
 
         MPI_Type_free(&send_datatype);
     }
-    // TODO: Do MPI_Isends outside omp loop
 }
 
 void
@@ -196,9 +201,7 @@ CellFabArray::PostReceives (const MapOfCopyComTagContainers& m_RcvTags,
                             int icomp, int ncomp, int SeqNum) 
 {
 
-    Vector<int>&                        recv_from = fb_recv_from;
-    Vector<const CopyComTagsContainer*> send_cctc;
-
+    Vector<int>& recv_from = fb_recv_from;
     recv_from.clear();
     recv_reqs.clear();
 
@@ -212,11 +215,11 @@ CellFabArray::PostReceives (const MapOfCopyComTagContainers& m_RcvTags,
     }
 
     const int nrecv = recv_from.size();
-
-    MPI_Comm comm = ParallelContext::CommunicatorSub();
+    
+    MPI_Comm comm = ParallelDescriptor::Communicator();
     for (int j = 0; j < nrecv; ++j)
     {
-        const int rank = ParallelContext::global_to_local_rank(recv_from[j]);
+        //const int rank = ParallelContext::global_to_local_rank(recv_from[j]);
 
         auto const& cctc = *recv_cctc[j];
 
@@ -274,7 +277,7 @@ CellFabArray::PostReceives (const MapOfCopyComTagContainers& m_RcvTags,
             addresses[0],
             1,
             recv_datatype,
-            rank,
+            recv_from[j],
             SeqNum,
             comm,
             &recv_reqs[j]);
@@ -291,22 +294,22 @@ CellFabArray::FillBoundary_finish ()
 
     if ( n_grow.allLE(IntVect::TheZeroVector()) && !fb_epo ) return; // For epo (Enforce Periodicity Only), there may be no ghost cells.
 
-    if (ParallelContext::NProcsSub() == 1) return;
+    if (ParallelDescriptor::NProcs() == 1) return;
 
-#ifdef AMREX_USE_MPI
-    const int N_rcvs = get_receive_tags().size();
+#ifdef BL_USE_MPI
+    const int N_rcvs = fb_recv_reqs.size();
     if (N_rcvs > 0)
     {
         fb_recv_stat.resize(N_rcvs);
-        MPI_Waitall(fb_recv_reqs.size(), fb_recv_reqs.dataPtr(), fb_recv_stat.dataPtr());
+        int ret_val = MPI_Waitall(N_rcvs, fb_recv_reqs.dataPtr(), fb_recv_stat.dataPtr());
         // equivalent to ParallelDescriptor::Waitall(fb_recv_reqs, fb_recv_stat);
     }
-    
-    const int N_snds = get_send_tags().size();
+
+    const int N_snds = fb_send_reqs.size();
     if (N_snds > 0) 
     {
         Vector<MPI_Status> stats(N_snds);
-        MPI_Waitall(fb_send_reqs.size(), fb_send_reqs.dataPtr(), stats.dataPtr());
+        int ret_val = MPI_Waitall(N_snds, fb_send_reqs.dataPtr(), stats.dataPtr());
         // equivalent to ParallelDescriptor::Waitall(fb_send_reqs, stats);
     }
 #endif
@@ -418,7 +421,7 @@ CellFabArray::ParallelCopy (CellFabArray& src,
 
     const CPC& thecpc = (a_cpc) ? *a_cpc : getCPC(dnghost, src, snghost, period);
 
-    if (ParallelContext::NProcsSub() == 1)
+    if (ParallelDescriptor::NProcs() == 1)
     {
         // There can only be local work to do.
 	    int N_locs = (*thecpc.m_LocTags).size();
@@ -556,7 +559,7 @@ CellFabArray::PC_local_cpu (const CPC& thecpc, CellFabArray const& src,
 }
 
 // Fill this with data from coarse and fine patches
-void       /* FillPatchFineBndry*/
+void
 CellFabArray::FillPatchTwoLevels (CellFabArray& coarse, CellFabArray& fine, 
                                   int scomp, int dcomp, int ncomp,
                                   const Geometry& cgeom, const Geometry& fgeom,
@@ -564,51 +567,31 @@ CellFabArray::FillPatchTwoLevels (CellFabArray& coarse, CellFabArray& fine,
 {
 	BL_PROFILE("FillPatchTwoLevels");
 
-    IntVect const& ngrow = nGrowVect(); // only grow boundaries?
-	MyInterpolater* mapper = &my_interpolater;
+    if (boxarray.empty()) return;
 
-	if (ngrow.max() > 0 || getBDKey() != fine.getBDKey())
+	if (getBDKey() != fine.getBDKey())
 	{
-	    const InterpolaterBoxCoarsener& coarsener = mapper->BoxCoarsener(ratio);
+        MyInterpolater* mapper = &my_interpolater;
         
-	    Box fdomain(fgeom.Domain());
-        Box cdomain = amrex::coarsen(fdomain,ratio);
+        const BoxArray fine_ba = fine.boxArray();
+        
+        // Copy coarse data to new patch which overlaps with 
+        BoxArray ba_crse_patch = amrex::coarsen(boxarray, ratio);
+        CellFabArray coarse_patch(ba_crse_patch, distributionMap, ncomp, 0);
+        coarse_patch.FillPatchSingleLevel(coarse, scomp, 0, ncomp, cgeom);
+        
+        for (MFIter mfi(coarse_patch); mfi.isValid(); ++mfi)
+        {
+            auto& sfab = coarse_patch[mfi];
+            auto& dfab = (*this)[mfi];
 
-	    for (int i = 0; i < AMREX_SPACEDIM; ++i) {
-            if (fgeom.isPeriodic(i)) {
-                fdomain.grow(i, ngrow[i]);
-            }
-	    }
-        
-        // Fill patch info
-	    /*const FabArrayBase::FPinfo& fpc 
-        = FabArrayBase::TheFPinfo(coarse, *this, fdomain, IntVect::TheZeroVector(), coarsener, cdomain, nullptr);*/
-        
-        // = *m_TheFillPatchCache.find(getBDKey())->second;
-	    if ( !this->boxarray.empty() /*fpc.ba_crse_patch.empty()*/)
-	    {
-            //CellFabArray coarse_patch(fpc.ba_crse_patch, fpc.dm_crse_patch, ncomp, 0);
-            BoxArray ba_crse_patch = amrex::coarsen(boxarray, ratio);
-            CellFabArray coarse_patch(ba_crse_patch, distributionMap, ncomp, 0);
-            coarse_patch.FillPatchSingleLevel(coarse, scomp, 0, ncomp, cgeom);
-            
-            for (MFIter mfi(coarse_patch); mfi.isValid(); ++mfi)
-            {
-                auto& sfab = coarse_patch[mfi];
-                /*int local_id = mfi.LocalIndex();
-                int global_id = fpc.dst_idxs[local_id];
-                auto& dfab = (*this)[global_id];
-                const Box& dbx = fpc.dst_boxes[global_id] & dfab.box();*/
-                auto& dfab = (*this)[mfi];
-
-                //interpolate to fine box
-                mapper->interp(sfab, 0, dfab, dcomp, ncomp, dfab.box(), 
-                                ratio, cgeom, fgeom, RunOn::Cpu);
-            }
-	    }
+            //interpolate to fine fab
+            mapper->interp(sfab, 0, dfab, dcomp, ncomp, dfab.box(), 
+                            ratio, cgeom, fgeom, RunOn::Cpu);
+        }
 	}
 
     // fill from fine data
 	if (this != &fine) 
-        FillPatchSingleLevel({0,0,0}, fine, scomp, dcomp, ncomp, fgeom);
+        FillPatchSingleLevel(fine, scomp, dcomp, ncomp, fgeom);
 }

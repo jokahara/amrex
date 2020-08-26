@@ -51,17 +51,7 @@ public:
     CellFabArray (const CellFabArray& rhs, MakeType maketype, int scomp, int ncomp);
 
     //! The destructor -- deletes all FABs in the array.
-    ~CellFabArray () {
-        /*for (MFIter mfi(*this), mfi.isValid(), ++mfi)
-        {
-            auto arr = array(mfi);
-            for (size_t i = 0; i < arr.size(); i++)
-            {
-                
-            }    
-        }*/
-        
-    };
+    ~CellFabArray () {};
 
     bool is_local(IntVect loc) {
         for (MFIter mfi(*this); mfi.isValid(); ++mfi) {
@@ -85,18 +75,15 @@ public:
      * from remote neighbours during FillBoundary
     */
     const MapOfCopyComTagContainers& get_receive_tags() {
-        const FB& theFB = *m_TheFBCache.find(getBDKey())->second;
-        return *theFB.m_RcvTags;
+        return *fill_boundary_tags->m_RcvTags;
     }
 
     const MapOfCopyComTagContainers& get_send_tags() {
-        const FB& theFB = *m_TheFBCache.find(getBDKey())->second;
-        return *theFB.m_SndTags;
+        return *fill_boundary_tags->m_SndTags;
     }
 
     const CopyComTagsContainer& get_local_tags() {
-        const FB& theFB = *m_TheFBCache.find(getBDKey())->second;
-        return *theFB.m_LocTags;
+        return *fill_boundary_tags->m_LocTags;
     }
 
     /* Fills in the boundary regions of each FAB in the FabArray.  
@@ -158,13 +145,8 @@ public:
 
     inline void FillPatchSingleLevel (CellFabArray& src,
                                int scomp, int dcomp, int ncomp,
-                               const Geometry& geom)
-    { FillPatchSingleLevel(nGrowVect(), src, scomp, dcomp, ncomp, geom); }
-
-    void FillPatchSingleLevel (amrex::IntVect const& nghost,
-                               CellFabArray& src,
-                               int scomp, int dcomp, int ncomp,
                                const Geometry& geom);
+
 
     void FillPatchTwoLevels (CellFabArray& coarse, CellFabArray& fine, 
                              int scomp, int dcomp, int ncomp,
@@ -185,6 +167,8 @@ private:
     typedef FabArrayBase::CopyComTagsContainer CopyComTagsContainer;
     typedef CopyComTag::MapOfCopyComTagContainers MapOfCopyComTagContainers;
 
+    const FB* fill_boundary_tags;
+
     #ifdef BL_USE_MPI
     //! Prepost nonblocking receives
     void PostReceives (const MapOfCopyComTagContainers& m_RcvTags,
@@ -192,7 +176,7 @@ private:
                     int icomp, int ncomp, int SeqNum);
     
     void PostSends (const MapOfCopyComTagContainers& m_SndTags,
-                    Vector<MPI_Request> send_reqs,
+                    Vector<MPI_Request>& send_reqs,
                     int icomp, int ncomp, int SeqNum);
     #endif
 
@@ -302,41 +286,41 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const Periodicity& peri
 
 // Fill this with data from src
 inline void
-CellFabArray::FillPatchSingleLevel (amrex::IntVect const& nghost,
-                                    CellFabArray& src,
+CellFabArray::FillPatchSingleLevel (CellFabArray& src,
                                     int scomp, int dcomp, int ncomp,
                                     const Geometry& geom)
 {
     BL_PROFILE("FillPatchSingleLevel");
-    Print() << "FillPatchSingleLevel\n";
-    Periodicity period = geom.periodicity();
     
-    if (this != &src or scomp != dcomp) {
-        // tags for cells which are moved / copied
-        // ghost cells are ignored for now
-        const CPC& cpc = getCPC(nghost, src, nghost, period);   
-
-    if (cpc.m_RcvTags->size() > 0 || cpc.m_SndTags->size() > 0)
+    if (this != &src or scomp != dcomp) 
     {
-        Cell::transfer_particles = false;
-        ParallelCopy(src, scomp, dcomp, ncomp, period, FabArrayBase::COPY, &cpc);
+        Periodicity period = geom.periodicity();
+        // create tags for cells which are copied
+        // ghost cells are not included
+        const CPC& cpc = getCPC(IntVect::Zero, src, IntVect::Zero, period);   
 
-        // resizing receiving cells
-        for (auto const& kv : *cpc.m_RcvTags)
+        if (ParallelDescriptor::NProcs() > 1)
         {
-            for (auto const& tag : kv.second)
+            Cell::transfer_particles = false;
+            ParallelCopy(src, scomp, dcomp, ncomp, period, FabArrayBase::COPY, &cpc);
+
+            // resizing receiving cells
+            for (auto const& kv : *cpc.m_RcvTags)
             {
-                const auto& bx = tag.dbox;
-                auto dfab = this->array(tag.dstIndex);
-                amrex::Loop( bx, ncomp,
-                [&] (int ii, int jj, int kk, int n) noexcept
+                for (auto const& tag : kv.second)
                 {
-                    const IntVect idx{ii,jj,kk};
-                    dfab(idx, n+dcomp)->resize();
-                });
+                    const auto& bx = tag.dbox;
+                    auto dfab = this->array(tag.dstIndex);
+                    amrex::Loop( bx, ncomp,
+                    [&] (int ii, int jj, int kk, int n) noexcept
+                    {
+                        const IntVect idx{ii,jj,kk};
+                        dfab(idx, n+dcomp)->resize();
+                    });
+                }
             }
         }
-    }
+        
         Cell::transfer_particles = true;
         ParallelCopy(src, scomp, dcomp, ncomp, period, FabArrayBase::COPY, &cpc);
     }

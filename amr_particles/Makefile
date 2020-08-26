@@ -1,8 +1,7 @@
-
 #set default architecture, can be overridden from the compile line
-ARCH = ${VLASIATOR_ARCH}
+ARCH = laptop
 
-include ../MAKE/Makefile.laptop #${ARCH}
+include ../MAKE/Makefile.${ARCH}
 
 INCS += ${INC_BOOST}
 INCS += ${INC_ZOLTAN}

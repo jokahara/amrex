@@ -41,6 +41,9 @@ public:
     Amr (const Amr& rhs) = delete;
     Amr& operator= (const Amr& rhs) = delete;
 
+    static void Initialize ();
+    static void Finalize ();
+
     void InitAmr ();
     
     //! Initialize coarsest level.
@@ -52,12 +55,11 @@ public:
     //! The destructor.
     virtual ~Amr ();
 
+	//! Fills ghost cells with data from other levels and remote neighbours.
     void FillAllBoundaries();
 
-    static void Initialize ();
-    static void Finalize ();
-
-    void LoadBalance () { LoadBalanceLevel0(); }
+    //! Rebuild grid hierarchy finer than lbase and load balance.
+    void regrid (int  lbase, bool initial = false);
 
     //! AmrLevel lev.
     AmrLevel& getLevel (int lev) noexcept { return *amr_level[lev]; }
@@ -85,8 +87,6 @@ public:
 
     const Vector<BoxArray>& getInitialBA() noexcept;
 
-    void InstallNewDistributionMap (int lev, const BoxArray& newba, const DistributionMapping& newdm);
-
 
     void printGridInfo (std::ostream& os,
                         int           min_lev,
@@ -98,20 +98,19 @@ protected:
     void initialInit (const BoxArray* lev0_grids = 0, const Vector<int>* pmap = 0);
     //! Check for valid input.
     void checkInput ();
-    //! Rebuild grid hierarchy finer than lbase.
-    void regrid (int  lbase, bool initial = false);
     //! Define new grid locations (called from regrid) and put into new_grids.
     void MakeGrids (int               lbase,
                     int&              new_finest,
                     Vector<BoxArray>& new_grids);
 
-    void MakeDistributionMaps (int lbase, int new_finest, 
-                               Vector<DistributionMapping>& dmap, 
-                               Vector<BoxArray>& grids);
+    // Makes distribution maps from given grids
+    void MakeDistributionMaps (int new_finest, 
+                               Vector<BoxArray>& new_grids,
+                               Vector<DistributionMapping>& new_dmap);
 
-    //! Used if loadbalance_with_workestimates is set true 
-    //DistributionMapping makeLoadBalanceDistributionMap (int lev, const BoxArray& ba) const;
-    void LoadBalanceLevel0 ();
+    void InstallNewLevels (int new_finest, 
+                           const Vector<BoxArray>& grids,
+                           const Vector<DistributionMapping>& dmap);
 
     // Make a new level using provided BoxArray and DistributionMapping and
     // fill with interpolated coarse level data.
@@ -129,8 +128,7 @@ protected:
 
     // Delete level data
     // overrides the pure virtual function in AmrCore
-    virtual void ClearLevel (int lev) override
-	{ amrex::Abort("How did we get her!"); }
+    void ClearLevel (int lev) override;
 
     // Make a new level from scratch using provided BoxArray and DistributionMapping.
     // Only used during initialization.
@@ -142,7 +140,11 @@ protected:
     // tag all cells for refinement
     // overrides the pure virtual function in AmrCore
     void ErrorEst (int lev, TagBoxArray& tags, Real time, int ngrow);
+    // contains cells we do not want to refine (for instance outer boundary)
     BoxArray GetAreaNotToTag (int lev);
+
+    // Remove or add tagged points which violate/satisfy additional
+    // user-specified criteria. (called after ErrorEst)
     void ManualTagsPlacement (int lev, TagBoxArray& tags, const Vector<IntVect>& bf_lev);
 
     //
@@ -154,8 +156,6 @@ protected:
 
     bool            isPeriodic[AMREX_SPACEDIM];  //!< Domain periodic?
     Vector<int>     regrid_int;      //!< Interval between regridding.
-
-    int             which_level_being_advanced; //!< Only >=0 if we are in Amr::timeStep(level,...)
 
     bool            abort_on_stream_retry_failure;
     int             stream_max_tries;

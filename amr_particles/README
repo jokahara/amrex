@@ -10,4 +10,3 @@ Add->Mesh->mesh and if VisIt asks about database
 correlation answer yes. Double-click on Pseudocolor-cell
 and change Point size (pixels) to 20. Finally click draw,
 the result should be quite close to simple_result.gif.
-

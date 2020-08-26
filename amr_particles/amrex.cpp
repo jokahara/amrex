@@ -28,6 +28,7 @@ along with dccrg. If not, see <http://www.gnu.org/licenses/>.
 #include "mpi.h"
 
 #include "Src/Amr.h"
+#define NO_CHILD_LID -1
 
 bool Cell::transfer_particles = false;
 
@@ -35,85 +36,196 @@ using namespace std;
 using namespace boost;
 using namespace amrex;
 
+
+void propagate(const Box& box, CellFab& fab, const Geometry& geom) 
+{
+	auto const& a = fab.array();
+	const double vx = 0.1;
+	ParallelFor(box, [&] AMREX_GPU_DEVICE (int i, int j, int k) 
+	{	
+		// loop over particles
+		IntVect iv(i,j,k);
+		for (uint n = 0; n < a(iv)->particles.size(); n++) 
+		{
+			auto &particle = a(iv)->particles[n];
+			particle[0] += vx;
+
+			// hande grid wrap around
+			if(particle[0] >= geom.ProbLength(0)) {
+				particle[0] -= geom.ProbLength(0);
+			}
+		}
+	});
+}
+
 void update_cell_lists(AmrLevel& level, Geometry &geom) 
 {
 	CellFabArray &grid = level.getCells();
-	//int added=0;
+//sleep(ParallelDescriptor::MyProc());
+	int count = 0;
 	// move particles to the particle list of the cell the particles are currently inside of
-	for (AmrIter mfi(level); mfi.isValid(); ++mfi) {
-		if (!mfi.isPropagated()) continue;
+	for (AmrIter it(level); it.isValid(); ++it) 
+	{	
+		bool has_children = (it.childLID() != NO_CHILD_LID);
 
-		auto const& a = grid[mfi].array();
-		auto box = mfi.validbox();
+		auto const& a = grid[it].array();
+		auto box = grid[it].box();
 
-		For(box.growHi(0,1), [&] (int i, int j, int k)
+		amrex::For(it.validbox(), [&] (int i, int j, int k)
 		{
 			const IntVect cell(i,j,k);
-			const IntVect neighbor_cell = cell - IntVect(1,0,0);
-			auto& neighbor_data = a(neighbor_cell);
+			auto& cell_data = a(cell);
 
 			int n = 0;
-			while (n < neighbor_data->particles.size()) {				
-				const IntVect current_cell = 
-					geom.CellIndex( neighbor_data->particles[n].data() );
-				
-				if (current_cell == cell) {
+			while (n < cell_data->particles.size()) {				
+				IntVect current_cell = 
+					geom.CellIndex( cell_data->particles[n].data() );
+
+				if (current_cell != cell) {
+					// check for periodicity
+					if(!box.contains(current_cell)) {
+						current_cell[0] += geom.ProbDomain().length(0);
+					}
+					if(current_cell[0] == 0) {
+						count++;
+						//Print() << cell << " adds " << cell_data->particles[n][0] << " to " << current_cell << "\n";
+					}
 					auto& current_data = a(current_cell);
-					current_data->particles.push_back(neighbor_data->particles[n]);
+					current_data->particles.push_back(cell_data->particles[n]);
 					current_data->number_of_particles = current_data->particles.size();
-					//added++;
-					
-					neighbor_data->particles.erase(neighbor_data->particles.begin() + n);
-					neighbor_data->number_of_particles = neighbor_data->particles.size();
-				} 
+
+					cell_data->particles.erase(cell_data->particles.begin() + n);
+					cell_data->number_of_particles = cell_data->particles.size();
+				}
 				else n++;
 			}
+			// clear data received from fine level
+			if (has_children) cell_data->clear();
 		});
 	}
-	//Print() << "moved " << added << "\n";
+	//AllPrint() << ParallelDescriptor::MyProc() << " added first " << count << "\n";
 	
+	if (ParallelDescriptor::NProcs() > 1)
+	for (auto& cont : grid.get_receive_tags())
+	{
+		for (auto& tag : cont.second)
+		{
+			//if (level.childLID(tag.dstIndex) != NO_CHILD_LID) continue;
+			propagate(tag.dbox, grid[tag.dstIndex], geom);
+
+			auto const& a = grid[tag.dstIndex].array(); 
+			const Box& box = grid[tag.dstIndex].box();
+			amrex::For(tag.dbox, [&] (int i, int j, int k) 
+			{
+				const IntVect cell(i,j,k);
+				auto& cell_data = a(cell);
+
+				for (int n = 0; n < cell_data->particles.size(); n++) 
+				{
+					const IntVect current_cell = 
+						geom.CellIndex( cell_data->particles[n].data() );
+					
+					if (current_cell != cell && box.contains(current_cell)) {
+						
+					if(current_cell[0] == 0) {
+						count++;
+						//Print() << cell << " remote add " << cell_data->particles[n][0] << " to " << current_cell << "\n";
+					}
+						auto& current_data = a(current_cell);
+						current_data->particles.push_back(cell_data->particles[n]);
+						current_data->number_of_particles = current_data->particles.size();
+
+						cell_data->particles.erase(cell_data->particles.begin() + n);
+						cell_data->number_of_particles = cell_data->particles.size();
+						n--;
+					}
+				}
+				// data not needed anymore
+				cell_data->clear();
+			});
+		}
+	}
+	//Print() << " added " << count << "\n";
+	
+	// updating from coarse to fine boundary
+	count = 0;
+	auto& crse_bndry = level.getCoarseBoudary();
+	if (crse_bndry.fine) {
+	for (int fab = 0; fab < crse_bndry.fine->size(); fab++)
+	{
+		Box box = crse_bndry.fine->box(fab);
+		auto const& a = crse_bndry.fine->get(fab);
+		amrex::For(box, [&] (int i, int j, int k)
+		{
+			const IntVect cell(i,j,k);
+			auto& cell_data = a(cell);
+			
+			for (int n = 0; n < cell_data->particles.size(); n++) {	
+				cell_data->particles[n][0] += 0.1;
+
+				const IntVect current_cell = 
+					geom.CellIndex( cell_data->particles[n].data() );
+
+				if (current_cell == cell) continue;
+
+				// find new location
+				for (AmrIter it(level); it.isValid(); ++it) {
+					if (it.validbox().contains(current_cell)) {
+						count++;
+						auto& current_data = level[it](current_cell);
+						current_data->particles.push_back(cell_data->particles[n]);
+						current_data->number_of_particles = current_data->particles.size();
+						break;
+					}
+				}
+			}
+			cell_data->clear();
+		});
+	}}
+	//ParallelContext::BarrierAll();
 }
 
 void printCounts(Amr& amr) 
 {
 	sleep(ParallelDescriptor::MyProc());
 	int total = 0;
-	int nghost = 0;
-	int count = 0;
 	
 	for (int lev = 0; lev <= amr.finestLevel(); lev++)
 	{
 		AllPrint() << "\n\tRANK " << ParallelDescriptor::MyProc() << ", "
 				   << "LEVEL " << lev << "\n";
 
-		for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) 
+		for (AmrIter it(amr[lev]); it.isValid(); ++it) 
 		{
-			//if (!mfi.isPropagated()) continue;
-			const auto& fab = amr[lev].getCells()[mfi];
-			int line = 0;
-			For(mfi.validbox().grow(IntVect{1,1,0}), amr.nComp(), [&] (int i, int j, int k, int n) 
+			const auto& fab = amr[lev].getCells()[it];
+			int line = 0, sum = 0;
+			amrex::For(it.validbox().grow(IntVect{1,1,0}), amr.nComp(), [&] (int i, int j, int k, int n) 
 			{
 				if(j != line) {
 					line = j;
 					AllPrint() << "\n";
 				}
-				auto& p = fab(IntVect{i,j,k},n);
+				IntVect iv{i,j,k};
+				auto& p = fab(iv,n);
 				if(p->number_of_particles < 10) AllPrint() << " ";
-				Print() << p->number_of_particles << " ";
-				count += p->number_of_particles;
+				AllPrint() << p->number_of_particles << " ";
+				if (it.validbox().contains(iv) ) sum += p->number_of_particles;
+				//if (it.validbox().contains(iv)) AllPrint() << "  ";
+				//else 
+				//AllPrint() << p.use_count() << " ";
 			});
-			AllPrint() << "\n" << mfi.validbox() << "\n";
+			AllPrint() << "\n" << it.validbox() << ": " << sum << "\n";
+			
+			if (it.childLID() == NO_CHILD_LID) total += sum;
 		}
 	}
 
-	Print() << count << " particles\n";
-	AllPrint() << "rank " << ParallelDescriptor::MyProc() << " has " << total << " particles in total\n";
-	AllPrint() << " + " << nghost << " in ghost cells\n";
+	AllPrint() << total << " particles\n";
 }
 
-void count(Amr& amr) 
+int count(Amr& amr) 
 {
-	sleep(ParallelDescriptor::MyProc());
+	//sleep(ParallelDescriptor::MyProc());
 	int total = 0;
 	int nghost = 0;
 	for (int lev = 0; lev <= amr.finestLevel(); lev++)
@@ -122,42 +234,117 @@ void count(Amr& amr)
 				   << "LEVEL " << lev;
 
 		int count = 0;
-		for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) 
+		for (AmrIter it(amr[lev]); it.isValid(); ++it) 
 		{
-			if (!mfi.isPropagated()) continue;
-			const auto& fab = amr[lev].getCells()[mfi];
+			if (it.childLID() != NO_CHILD_LID) continue;
+
+			const auto& fab = amr[lev].getCells()[it];
 			int line = 0;
-			For(mfi.validbox().grow(IntVect{0,0,0}), amr.nComp(), [&] (int i, int j, int k, int n) 
+			amrex::For(it.validbox(), amr.nComp(), [&] (int i, int j, int k, int n) 
 			{
 				auto& p = fab(IntVect{i,j,k},n);
 				count += p->number_of_particles;
 			});
 		}
 		AllPrint() << ": " << count << " particles\n";
+		total += count;
 	}
-
+	return total;
 }
 
-void propagate(const Box& box, CellFab& fab, Geometry& geom) 
-{
-	const double vx = 0.1;
-	//Print() << box << "\n";
-	ParallelFor(box, [&] (int i, int j, int k) 
-	{	
-		// loop over particles
-		IntVect iv(i,j,k);
-		//Print() << iv << "\n";
-		for (uint n = 0; n < fab(iv)->particles.size(); n++) 
-		{
-			auto &particle = fab(iv)->particles[n];
-			particle[0] += vx;
+/*!
+Writes the cells on this process into a vtk file with given name in ASCII format.
 
-			// hande grid wrap around
-			if(particle[0] >= geom.period(0)) {
-				particle[0] -= geom.period(0);
+The cells are written in ascending order.
+Must be called simultaneously on all processes.
+
+Returns true on success, false otherwise.
+*/
+bool write_grid(Amr& amr, const std::string& file_name)
+{
+	std::ofstream outfile(file_name);
+	if (!outfile.is_open()) {
+		std::cerr << "Couldn't open file " << file_name << std::endl;
+		return false;
+	}
+
+	outfile <<
+		"# vtk DataFile Version 2.0\n"
+		"Cartesian cell refinable grid\n"
+		"ASCII\n"
+		"DATASET UNSTRUCTURED_GRID\n";
+
+	int n_points = 0;
+	for (int lev = 0; lev <= amr.finestLevel(); lev++)
+	{
+		for (AmrIter it(amr[lev]); it.isValid(); ++it)
+		{
+			if (it.childLID() == NO_CHILD_LID)
+				n_points += it.validbox().numPts();
+		}
+	}
+
+	// write separate points for every cells corners
+	outfile << "POINTS " << n_points * 8 << " float" << std::endl;
+	for (int lev = 0; lev <= amr.finestLevel(); lev++)
+	{
+		for (AmrIter it(amr[lev]); it.isValid(); ++it)
+		{
+			if (it.childLID() != NO_CHILD_LID) continue;
+		
+			const Geometry& geom = amr.Geom(lev);
+			Box region = it.validbox();
+			Vector<Real> x_edge, y_edge, z_edge;
+			geom.GetEdgeLoc(x_edge, region, 0);
+			geom.GetEdgeLoc(y_edge, region, 1);
+			geom.GetEdgeLoc(z_edge, region, 2);
+			for (int i = 0; i < x_edge.size() - 1; i++)
+			for (int j = 0; j < y_edge.size() - 1; j++)
+			for (int k = 0; k < z_edge.size() - 1; k++)
+			{
+				const std::array<double, 3>
+					cell_min = {x_edge[i], y_edge[j], z_edge[k]},
+					cell_max = {x_edge[i+1], y_edge[j+1], z_edge[k+1]};
+
+				outfile
+					<< cell_min[0] << " " << cell_min[1] << " " << cell_min[2] << "\n"
+					<< cell_max[0] << " " << cell_min[1] << " " << cell_min[2] << "\n"
+					<< cell_min[0] << " " << cell_max[1] << " " << cell_min[2] << "\n"
+					<< cell_max[0] << " " << cell_max[1] << " " << cell_min[2] << "\n"
+					<< cell_min[0] << " " << cell_min[1] << " " << cell_max[2] << "\n"
+					<< cell_max[0] << " " << cell_min[1] << " " << cell_max[2] << "\n"
+					<< cell_min[0] << " " << cell_max[1] << " " << cell_max[2] << "\n"
+					<< cell_max[0] << " " << cell_max[1] << " " << cell_max[2] << "\n";
 			}
 		}
-	});
+	}
+	
+
+	// map cells to written points
+	outfile << "CELLS " << n_points << " " << n_points * 9 << std::endl;
+	for (unsigned int j = 0; j < n_points; j++) {
+		outfile << "8 ";
+		for (int i = 0; i < 8; i++) {
+				outfile << j * 8 + i << " ";
+		}
+		outfile << std::endl;
+	}
+
+	// cell types
+	outfile << "CELL_TYPES " << n_points << std::endl;
+	for (unsigned int i = 0; i < n_points; i++) {
+		outfile << 11 << std::endl;
+	}
+
+	if (!outfile.good()) {
+		std::cerr << "Writing of vtk file probably failed" << std::endl;
+		// TODO: throw an exception instead
+		exit(EXIT_FAILURE);
+	}
+
+	outfile.close();
+
+	return true;
 }
 
 /*!
@@ -173,6 +360,7 @@ void save(const int rank, Amr &amr, unsigned int step)
 		+ lexical_cast<string>(rank) + "_"
 		+ lexical_cast<string>(step) + "_grid.vtk"
 	);
+	write_grid(amr, grid_file_name.c_str());
 
 	// write the particles
 	const string outname(
@@ -193,11 +381,11 @@ void save(const int rank, Amr &amr, unsigned int step)
 	for (int lev = 0; lev <= amr.finestLevel(); lev++)
 	{
 		auto& grid = amr[lev].getCells();
-		for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) {
-			if (!mfi.isPropagated()) continue;
+		for (AmrIter it(amr[lev]); it.isValid(); ++it) {
+			if (it.childLID() != NO_CHILD_LID) continue;
 
-			auto const& a = grid[mfi].array();
-			For(mfi.validbox(), [&] (int i, int j, int k)
+			auto const& a = grid[it].array();
+			amrex::For(it.validbox(), [&] (int i, int j, int k)
 			{
 				total_particles += a(i,j,k)->particles.size();
 			});
@@ -211,11 +399,11 @@ void save(const int rank, Amr &amr, unsigned int step)
 	for (int lev = 0; lev <= amr.finestLevel(); lev++)
 	{
 		auto& grid = amr[lev].getCells();
-		for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) {
-			if (!mfi.isPropagated()) continue;
+		for (AmrIter it(amr[lev]); it.isValid(); ++it) {
+			if (it.childLID() != NO_CHILD_LID) continue;
 
-			auto const& a = grid[mfi].array();
-			For(mfi.validbox(), [&] (int i, int j, int k)
+			auto const& a = grid[it].array();
+			amrex::For(it.validbox(), [&] (int i, int j, int k)
 			{
 				auto const particles = a(i,j,k)->particles;
 				for (uint n = 0; n < a(i,j,k)->particles.size(); n++)
@@ -258,11 +446,11 @@ void save(const int rank, Amr &amr, unsigned int step)
 	for (int lev = 0; lev <= amr.finestLevel(); lev++)
 	{
 		auto& grid = amr[lev].getCells();
-		for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) {
-			if (!mfi.isPropagated()) continue;
+		for (AmrIter it(amr[lev]); it.isValid(); ++it) {
+			if (it.childLID() != NO_CHILD_LID) continue;
 
-			auto const& a = grid[mfi].array();
-			For(mfi.validbox(), [&] (int i, int j, int k) {
+			auto const& a = grid[it].array();
+			amrex::For(it.validbox(), [&] (int i, int j, int k) {
 				for (int n = 0; n < a(i,j,k)->number_of_particles; n++)
 				{
 					outfile << lev << " ";
@@ -276,14 +464,14 @@ void save(const int rank, Amr &amr, unsigned int step)
 	for (int lev = 0; lev <= amr.finestLevel(); lev++)
 	{
 		auto& grid = amr[lev].getCells();
-		for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) {
-			if (!mfi.isPropagated()) continue;
+		for (AmrIter it(amr[lev]); it.isValid(); ++it) {
+			if (it.childLID() != NO_CHILD_LID) continue;
 			
-			auto const& a = grid[mfi].array();
-			For(mfi.validbox(), [&] (int i, int j, int k) {
+			auto const& a = grid[it].array();
+			amrex::For(it.validbox(), [&] (int i, int j, int k) {
 				for (int n = 0; n < 3; n++)
 				{
-					outfile << mfi.index() << " ";
+					outfile << it.index() << " ";
 				}
 			});
 		}
@@ -297,34 +485,40 @@ void save(const int rank, Amr &amr, unsigned int step)
 int main_main()
 {
 	clock_t before = clock();
-	amrex::Print() << "Hello world from AMReX version " << amrex::Version() << "\n";
+	Print() << "Hello world from AMReX version " << amrex::Version() << "\n";
 
 	int rank = ParallelDescriptor::MyProc();
 	int comm_size = ParallelDescriptor::NProcs();
-	amrex::Print() << "Running " << comm_size << " processes\n";
 	
 	Amr amr;
-	amrex::Print() << "   Domain: " << amr.Geom(0).Domain().size() << "\n";
+	AllPrint() << "Domain: " << amr.Geom(0).Domain().size() << "\n";
 	amr.defBaseLevel();
-
-	Print() << "Level " << 0 << " has " << amr[0].countCells() << " cells\n"; 
+	
+	AllPrint() << "Level " << 0 << " has " << amr[0].countCells() << " cells\n"; 
 	// Initialize particles
 	{
 		CellFabArray& grid = amr[0].getCells();
-		int y = amr.Geom(0).Domain().length(1);
+		IntVect length = amr.Geom(0).Domain().size();
+		int x = std::min(length[0], 12) / 2;
+		int y = length[1] / 2;
 
-		for (AmrIter mfi(amr[0]); mfi.isValid(); ++mfi) {
-			const Box& box = mfi.validbox();
-			auto a = grid[mfi].array();
+		for (AmrIter it(amr[0]); it.isValid(); ++it) 
+		{
+			const Box& box = it.validbox();
+			auto a = grid[it].array();
 			int n = 0;
-			For(box, [&] (int i, int j, int k) 
+			amrex::For(box, [&] (int i, int j, int k) 
 			{
 				Cell* cell_data = a(i,j,k).get();
-				if(!cell_data) Print() << "something went wrong\n";
+				if(!cell_data) Abort("Cell was not allocated!");
 
-				const unsigned int number_of_particles = i+y*j;
-					//= (unsigned int)ceil(max_particles_per_cell * double(rand()) / RAND_MAX);
-				for (unsigned int n = 0; n < number_of_particles; n++) {
+				int nx = (x > i) ? i : abs(i - 2*x);
+				int ny = (y > j) ? j : abs(j - 2*y);
+				unsigned int number_of_particles = nx*ny;
+
+				if (i>2*x) number_of_particles = 2;
+				for (unsigned int n = 0; n < number_of_particles; n++) 
+				{
 					std::array<double, 3> coordinates = {{
 						i + double(rand()) / RAND_MAX,
 						j + double(rand()) / RAND_MAX,
@@ -334,20 +528,20 @@ int main_main()
 					cell_data->particles.push_back(coordinates);
 					cell_data->number_of_particles = cell_data->particles.size();
 				}
-				
 			});
 		}
 	}
 
-    // Build fine level grids.
-    if (amr.maxLevel() > 0) amr.bldFineLevels();
+	// Build fine level grids.
+    if (amr.maxLevel() > 0) {
+    	Print() << "Building fine levels\n";
+		amr.bldFineLevels();
+	}
 
 	Print() << "Finest level = " << amr.finestLevel() << "\n";
 	
 	amr.FillAllBoundaries();
-	count(amr);
-	//printCounts(amr);
-
+	
 	/*
 	Visualize the results for example with visit -o simple_particles.visit
 	or visit -o simple_grid.visit or overlay them both from the user interface.
@@ -365,7 +559,8 @@ int main_main()
 	}
 	
 	const unsigned int max_steps = 50;
-	for (unsigned int step = 0; step < max_steps; step++) {
+	for (unsigned int step = 0; step < max_steps; step++) 
+	{
 		// append current output file names to the visit files
 		if (rank == 0) {
 			for (int i = 0; i < comm_size; i++) {
@@ -377,64 +572,40 @@ int main_main()
 					<< step << "_grid.vtk\n";
 			}
 		}
-		
-		//if (step % 5 == 0) amr.LoadBalance();
-		//Print() << "step " << step << "\n";
-		amr.FillAllBoundaries();
 
-		//count(amr);
-	
+		if (amr.Verbose() > 0) 
+			Print() << "step " << step << "\n";
+		
+		// regrid all levels every 5 steps
+		if (step % 5 == 0 && step > 0) {
+			amr.regrid(0);
+			if(step == 40) printCounts(amr);
+		} 
+		
+		// Fills ghost cells with data from other levels and remote neighbours.
+		amr.FillAllBoundaries();
+		
 		save(rank, amr, step);
+		//printCounts(amr);
 
 		int Ncomp = amr.nComp();
 		for (int lev = 0; lev <= amr.finestLevel(); lev++)
 		{
-			//Print() << "	lev " << lev << "\n";
 			Geometry &geom = amr.Geom(lev);
 			CellFabArray& grid = amr[lev].getCells();
 
-			// move particles in x-direction
-			for (AmrIter mfi(amr[lev]); mfi.isValid(); ++mfi) { // loop over local boxes
-				if (!mfi.isPropagated()) continue;
-				Box box = mfi.validbox();
-				propagate(box, grid[mfi], geom);
-			}
-
-			auto& fine_bndry = amr[lev].getFineBoudary();
-			if (fine_bndry.coarse) {
-				BoxList done_boxes;
-				
-				for (size_t fab = 0; fab < fine_bndry.coarse->size(); fab++)
-				{
-					CellFab& cfab = fine_bndry.coarse->get(fab);
-					BoxList do_boxes(complementIn(cfab.box(), done_boxes));
-					for (int i = 0; i < do_boxes.size(); i++)
-					{
-						propagate(do_boxes.data()[i], cfab, geom);
-					}
-
-					done_boxes.join(do_boxes);
-				}
-			}
-			auto& crse_bndry = amr[lev].getCoarseBoudary();
-			if (crse_bndry.fine) {
-				BoxList done_boxes;
-				for (size_t fab = 0; fab < crse_bndry.fine->size(); fab++)
-				{
-					CellFab& cfab = crse_bndry.fine->get(fab);
-					BoxList do_boxes(complementIn(cfab.box(), done_boxes));
-					for (int i = 0; i < do_boxes.size(); i++)
-					{
-						propagate(do_boxes.data()[i], cfab, geom);
-					}
-					done_boxes.join(do_boxes);
-				}
+			// loop over local boxes
+			//#pragma omp parallel
+			for (AmrIter it(amr[lev], false); it.isValid(); ++it) 
+			{ 
+				//if (it.childLID() != NO_CHILD_LID) continue;
+				Box box = it.validbox();
+				// move particles in x-direction
+				propagate(box, grid[it], geom);
 			}
 			
-			update_cell_lists(amr[lev], amr.Geom(lev));
+			update_cell_lists(amr[lev], geom);
 		}
-		
-		//count(amr);
 	}
 	// append final output file names to the visit files
 	if (rank == 0) {
@@ -457,8 +628,10 @@ int main_main()
 		<< ": simulation took " << double(after - before) / CLOCKS_PER_SEC
 		<< " seconds "
 		<< endl;
-	printCounts(amr);
 
+	//printCounts(amr);
+	count(amr);
+	
 	return EXIT_SUCCESS;
 }
 

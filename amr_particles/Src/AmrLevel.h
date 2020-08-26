@@ -76,8 +76,10 @@ public:
     //! Returns number of cells on level.
     Long countCells () const noexcept { return grids.numPts(); }
 
-    // Builds coarse and fine boundaries, and sets which areas will be propagated
+    // Builds coarse and fine boundaries, and sets parent to child connections
     void constructCrseFineBdry(AmrLevel* fine);
+
+    int childLID(int K) const noexcept { return children[K]; }
 
     //! Get the area not to tag.
     const BoxArray& getAreaNotToTag() noexcept { return m_AreaNotToTag; }
@@ -111,13 +113,13 @@ public:
 
     /** 
     * Called in grid_places after other tagging routines to modify
-    * the list of tagged points.  Default implementation does nothing.
+    * the list of tagged points. Default implementation does nothing.
     */
     void manual_tags_placement (TagBoxArray&           tags,
-                                const Vector<IntVect>& bf_lev) {}
+                                const Vector<IntVect>& bf_lev);
 
     // Estimate the amount of work required to advance just this level
-    void estimateWork(MultiFab& mf) { state->EstimateWork(mf); }
+    void estimateWork(MultiFab& mf) {}
 
     void FillPatch (AmrLevel& AmrLevel,
                     int       boxGrow,
@@ -172,38 +174,45 @@ protected:
     std::unique_ptr<CellFabArray> state;
     // std::unique_ptr<CellFabArray> new_state;
     
-    // local Cellfabs that overlap with finer levels are not propagated.
-    std::vector<int> propagate_fab;
+    // local indexes to CellFabs of finer refinement level
+    std::vector<int> children;
 
     // Ghost cells on the coarse/fine boundaries;
     BoundaryContainer coarse_boundary;  // boundary with coarser level
-    BoundaryContainer fine_boundary;    // boundary with finer level
+    BoundaryContainer fine_boundary;    // boundary with finer level    
 
-    BoxArray              m_AreaNotToTag; //Area which shouldn't be tagged on this level.
-    Box                   m_AreaToTag;    //Area which is allowed to be tagged on this level.
+    BoxArray          m_AreaNotToTag; //Area which shouldn't be tagged on this level.
+    Box               m_AreaToTag;    //Area which is allowed to be tagged on this level.
+
+    Vector<TagBox> manual_tags;
+    //std::unordered_map<int, TagBox> manual_tags;
     
     std::unique_ptr<FabFactory<CellFab> > m_factory;
 };
 
+// Iterator for AmrLevel
+// returns index to child CellFab if one exists 
 class AmrIter : public MFIter 
 {
 public:
     friend class AmrLevel;
 
-    AmrIter (AmrLevel& AmrLevel)
-    : MFIter(*AmrLevel.state)
+    AmrIter (AmrLevel& AmrLevel, bool do_tiling=false)
+    : MFIter(*AmrLevel.state, do_tiling)
     {
-        propagate = AmrLevel.propagate_fab.data();
+        child = AmrLevel.children.data();
     }
 
     inline void operator++() noexcept 
     {
-        propagate++;
+        child++;
         ++currentIndex;
     }
 
-    inline bool isPropagated() noexcept
-    { return *propagate; }
+    // Local index to CellFab of higher refinement
+    // or -1 if CellFab does not have children
+    inline int childLID() noexcept
+    { return *child; }
     
     ~AmrIter () {};
     
@@ -213,7 +222,7 @@ private:
     AmrIter (const AmrIter& rhs);
     AmrIter& operator= (const AmrIter& rhs);
 
-    int* propagate;
+    int* child;
 };
 
 #endif /*_AmrLevel_H_*/
