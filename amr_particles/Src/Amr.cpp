@@ -42,12 +42,6 @@ Amr::Finalize () // static function
     initialized = false;
 }
 
-Vector<std::unique_ptr<AmrLevel> >&
-Amr::getAmrLevels () noexcept
-{
-    return amr_level;
-}
-
 Long
 Amr::cellCount (int lev) noexcept
 {

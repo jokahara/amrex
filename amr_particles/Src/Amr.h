@@ -64,7 +64,7 @@ public:
     //! AmrLevel lev.
     AmrLevel& getLevel (int lev) noexcept { return *amr_level[lev]; }
     AmrLevel& operator[] (int lev) { return *amr_level[lev]; }
-    Vector<std::unique_ptr<AmrLevel> >& getAmrLevels () noexcept;
+    
     //! Number of components.
     int nComp () noexcept { return n_comp; }
     //! Number of ghost cells.

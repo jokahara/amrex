@@ -68,7 +68,7 @@ public:
     CellFabArray (const CellFabArray& rhs) = delete;
     CellFabArray& operator= (const CellFabArray& rhs) = delete;
     
-    void EstimateWork (MultiFab& mf);
+    //void EstimateWork (MultiFab& mf);
 
     /** 
      * Returns a map of tags pointing to boxes which receive data 
@@ -139,10 +139,6 @@ public:
                         CpOp op = FabArrayBase::COPY,
                         const FabArrayBase::CPC* a_cpc = nullptr);
 
-    /*void ParallelCopy_local (const CPC& thecpc, CellFabArray const& src,
-                            int scomp, int dcomp, int ncomp, CpOp op) 
-    { PC_local_cpu(thecpc, src, scomp, dcomp, ncomp, op); }*/
-
     inline void FillPatchSingleLevel (CellFabArray& src,
                                int scomp, int dcomp, int ncomp,
                                const Geometry& geom);
@@ -153,20 +149,11 @@ public:
                              const Geometry& cgeom, const Geometry& fgeom,
                              const IntVect& ratio);
 
-    /*void FillCoarseToFine (CellFabArray& coarse,
-                           int scomp, int dcomp, int ncomp,
-                           const Geometry& cgeom, const Geometry& fgeom,
-                           const IntVect& ratio);
-
-    void FillFineToCoarse (CellFabArray& fine,
-                           int scomp, int dcomp, int ncomp,
-                           const Geometry& cgeom, const Geometry& fgeom,
-                           const IntVect& ratio);*/
-
 private:
     typedef FabArrayBase::CopyComTagsContainer CopyComTagsContainer;
     typedef CopyComTag::MapOfCopyComTagContainers MapOfCopyComTagContainers;
 
+    // the tag container created by FillBoundary
     const FB* fill_boundary_tags;
 
     #ifdef BL_USE_MPI
@@ -188,21 +175,11 @@ private:
 };
 
 
-inline void
+/*inline void
 CellFabArray::EstimateWork (MultiFab& mf) 
 {
-    for (MFIter mfi(mf); mfi.isValid(); ++mfi) {
-        auto& mfab = mf[mfi];
-        auto& sfab = get(mfi);
-        auto box = mfi.validbox();
-        
-        ParallelFor(box, [&] (int i, int j, int k)
-        {
-            IntVect idx{i,j,k};
-            mfab(idx) = sfab(idx)->number_of_particles;
-        });
-    }
-}
+    
+}*/
 
 inline void
 CellFabArray::FillBoundary (bool cross)

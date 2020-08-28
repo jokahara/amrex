@@ -41,15 +41,13 @@ public:
         return coarse;
     }
 
-    /**
-    * Coarse to fine interpolation in space.
-    */
+    // Interpolates from coarse level to fine.
     void interp (const CellFab&   crse,
                  int              crse_comp,
                  CellFab&         fine,
                  int              fine_comp,
                  int              ncomp,
-                 const Box&       fine_region,  /*target region*/
+                 const Box&       fine_region,  /*the region to fill*/
                  const IntVect&   ratio,
                  const Geometry&  crse_geom,
                  const Geometry&  fine_geom,
@@ -63,7 +61,6 @@ public:
         Box coarse_region = CoarseBox(fine_region, ratio);
 
         // clear receiving cells
-        #pragma omp parallel
         ParallelFor(fine_region, ncomp, [&] (int i, int j, int k, int n) 
         {
             fine_arr(i,j,k,n)->clear();
@@ -97,11 +94,7 @@ public:
     }
 
 
-    /**
-    * Fine to coarse interpolation in space.
-    * This is a pure virtual function and hence MUST
-    * be implemented by derived classes.
-    */
+    // Averages from fine level to coarse.
     void average(const CellFab&   crse,
                  int              crse_comp,
                  CellFab&         fine,
@@ -116,7 +109,7 @@ public:
         auto const crse_arr = crse.const_array();
         auto fine_arr = fine.array();
         
-        Box coarse_region = amrex::coarsen(fine_region, ratio);
+        Box coarse_region = CoarseBox(fine_region, ratio);
         
         ParallelFor(coarse_region, ncomp, [&] (int i, int j, int k, int n) 
         {

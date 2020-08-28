@@ -18,13 +18,20 @@ amr.max_level        = 2       # maximum level number allowed ( >= 0 )
 amr.ref_ratio        = 2 2 2 2 # refinement ratio (for each level)
 amr.ref_dir          = 1 1 0   # which directions to refine (for 2D simulations)
 
-amr.max_grid_size     = 16      
+# value should be given for each level, otherwise default values will be used
+amr.max_grid_size     = 4 8 16 # default is 32
 amr.blocking_factor_x = 1 2 4  # each grid is divisible by blocking_factor
 amr.blocking_factor_y = 1 2 4  # should be 2^max_level or higher
 amr.blocking_factor_z = 1 1 1     
 
 amr.n_error_buf       = 0      # buffer cells around each tagged cell
 
-amr.regrid_int        = 2      # how often to regrid
+# NOT CURRENTLY USED
+# amr.regrid_int        = 2      # how often to regrid
+# use_fixed_coarse_grids
+# use_fixed_upto_level
 
-amr.loadbalance_with_workestimates = 0
+# chop up grids to have the number of grids no less the number of procs
+# refine_grid_layout = 0        
+
+# amr.loadbalance_with_workestimates = 0

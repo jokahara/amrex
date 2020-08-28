@@ -105,11 +105,9 @@ public:
                               int       nghost = 0);
                                         
     //! Data container.
-    CellFabArray& getCells () noexcept 
-    { return *state; }
+    CellFabArray& getCells () noexcept { return *state; }
 
-    CellFab& operator[](MFIter& mfi) noexcept 
-    { return (*state)[mfi]; }
+    CellFab& operator[](MFIter& mfi) noexcept { return (*state)[mfi]; }
 
     /** 
     * Called in grid_places after other tagging routines to modify

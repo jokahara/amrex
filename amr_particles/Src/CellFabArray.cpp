@@ -301,16 +301,14 @@ CellFabArray::FillBoundary_finish ()
     if (N_rcvs > 0)
     {
         fb_recv_stat.resize(N_rcvs);
-        int ret_val = MPI_Waitall(N_rcvs, fb_recv_reqs.dataPtr(), fb_recv_stat.dataPtr());
-        // equivalent to ParallelDescriptor::Waitall(fb_recv_reqs, fb_recv_stat);
+        MPI_Waitall(N_rcvs, fb_recv_reqs.dataPtr(), fb_recv_stat.dataPtr());
     }
 
     const int N_snds = fb_send_reqs.size();
     if (N_snds > 0) 
     {
         Vector<MPI_Status> stats(N_snds);
-        int ret_val = MPI_Waitall(N_snds, fb_send_reqs.dataPtr(), stats.dataPtr());
-        // equivalent to ParallelDescriptor::Waitall(fb_send_reqs, stats);
+        MPI_Waitall(N_snds, fb_send_reqs.dataPtr(), stats.dataPtr());
     }
 #endif
 }
@@ -318,7 +316,7 @@ CellFabArray::FillBoundary_finish ()
 void
 CellFabArray::FB_local_copy_cpu (const FB& TheFB, int scomp, int ncomp)
 {
-    if(!Cell::transfer_particles) return;
+    if (!Cell::transfer_particles) return;
 
     auto const& LocTags = *(TheFB.m_LocTags);
     int N_locs = LocTags.size();
@@ -375,8 +373,7 @@ CellFabArray::ParallelCopy (CellFabArray& src,
                             int scomp, int dcomp, int ncomp,
                             const IntVect& snghost, const IntVect& dnghost,
                             const Periodicity& period,
-                            CpOp op,
-                            const FabArrayBase::CPC* a_cpc)
+                            CpOp op, const FabArrayBase::CPC* a_cpc)
 {
     BL_PROFILE("FabArray::ParallelCopy()");
 
