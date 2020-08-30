@@ -55,7 +55,7 @@ public:
     void init (AmrLevel* old = nullptr);
 
     //! Operations to be done after regridding
-    void post_regrid (int lbase, int new_finest) {};
+    void post_regrid (int lbase, int new_finest);
     
     //! Returns this AmrLevel.
     int Level () const noexcept { return level; }
@@ -79,7 +79,9 @@ public:
     // Builds coarse and fine boundaries, and sets parent to child connections
     void constructCrseFineBdry(AmrLevel* fine);
 
-    int childLID(int K) const noexcept { return children[K]; }
+    // return local id of child CellFab corresponding to parents local id
+    // if parent has no children -1 is returned.
+    int childLID(int lid) const noexcept { return children[lid]; }
 
     //! Get the area not to tag.
     const BoxArray& getAreaNotToTag() noexcept { return m_AreaNotToTag; }

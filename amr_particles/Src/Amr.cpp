@@ -86,9 +86,6 @@ Amr::InitAmr ()
     pp.query("initial_grid_file", initial_grids_file);
     pp.query("regrid_file"      , regrid_grids_file);
 
-    int nlev = max_level+1;
-    amr_level.resize(nlev);
-
     // Generate internal values from user-supplied values.
     n_comp = 1;
     pp.query("n_comp", n_comp);
@@ -96,7 +93,7 @@ Amr::InitAmr ()
     int grow = 1;
     pp.query("n_grow", grow);
     n_grow = {grow, grow, grow};
-
+    
     if (check_input) checkInput();
     
     // Make the default regrid_int = 1 for all levels.
@@ -125,6 +122,10 @@ Amr::InitAmr ()
         }
     }
     
+    // make empty pointers to levels
+    int nlev = max_level+1;
+    amr_level.resize(nlev);
+
     // Read in the regrid interval if max_level > 0.
     if (max_level > 0) 
     {
@@ -408,6 +409,7 @@ Amr::bldFineLevels ()
     {
         int new_finest;
         MakeGrids(finest_level, new_finest, new_grids);
+
         if (new_finest <= finest_level) break;
 
         // Make new distribution maps
@@ -419,12 +421,10 @@ Amr::bldFineLevels ()
     }
     while (finest_level < max_level);
     
-    // make coarse/fine boundaries
-    for (int i = 0; i < finest_level; i++)
-    {
-        amr_level[i]->constructCrseFineBdry(amr_level[i+1].get());
+    // post regridding operations
+    for (int lev = 0; lev <= finest_level; ++lev) {
+        amr_level[lev]->post_regrid(0, finest_level);
     }
-    amr_level[finest_level]->constructCrseFineBdry(nullptr);
     
     // Iterate grids to ensure fine grids encompass all interesting gunk.
     // but only iterate if we did not provide a grids file.
@@ -511,17 +511,10 @@ Amr::regrid (int  lbase,
 
     finest_level = new_finest;
 
-    // make coarse/fine boundaries
-    for (int i = 0; i < finest_level; i++)
-    {
-        amr_level[i]->constructCrseFineBdry(amr_level[i+1].get());
-    }
-    amr_level[finest_level]->constructCrseFineBdry(nullptr);
-
     // Check at *all* levels whether we need to do anything special now that the grids
     // at levels lbase+1 and higher may have changed.  
-    for(int lev(0); lev <= new_finest; ++lev) {
-        amr_level[lev]->post_regrid(lbase,new_finest);
+    for (int lev = 0; lev <= finest_level; ++lev) {
+        amr_level[lev]->post_regrid(lbase, finest_level);
     }
 
     // Report creation of new grids.
@@ -888,6 +881,7 @@ Amr::MakeGrids (int lbase, int& new_finest,
     }
     
     // Make new grids based on error estimates.
+        Print() << "make new\n";
     MakeNewGrids(lbase, 0, new_finest, new_grids);
     
     if (verbose > 0)
@@ -908,6 +902,7 @@ Amr::ErrorEst (int lev, TagBoxArray& tags, Real time, int ngrow)
     * Be careful that fine areas aren't unrefined do to coarser cells marked as CLEAR!
     * For more see AmrMesh::MakeNewGrids() in AmrCore/AMReX_AmrMesh.cpp
     */
+   Print() << "tag " << lev << "\n";
     amr_level[lev]->errorEst(tags, TagBox::CLEAR, TagBox::SET, time, n_error_buf[lev][0], ngrow);
 }
 
@@ -920,6 +915,7 @@ Amr::GetAreaNotToTag (int lev)
 void
 Amr::ManualTagsPlacement (int lev, TagBoxArray& tags, const Vector<IntVect>& bf_lev)
 {
+   Print() << "manual tag " << lev << "\n";
     amr_level[lev]->manual_tags_placement(tags, bf_lev);
 }
 

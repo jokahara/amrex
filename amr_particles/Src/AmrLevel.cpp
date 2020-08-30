@@ -167,6 +167,19 @@ AmrLevel::FillFromCoarsePatch (CellFabArray& dest,
     }
 }
 
+void
+AmrLevel::post_regrid(int lbase, int new_finest)
+{
+    // make coarse/fine boundaries
+    if (this->level < new_finest) {
+        AmrLevel& fine_level = (*parent)[this->level + 1];
+        constructCrseFineBdry(&fine_level);
+    }
+    else {
+        constructCrseFineBdry(nullptr);
+    }
+};
+
 // Creates fine boundary for this and coarse boundary for fine level
 void AmrLevel::constructCrseFineBdry(AmrLevel* fineLevel) 
 {

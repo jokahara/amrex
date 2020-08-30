@@ -491,10 +491,9 @@ int main_main()
 	int comm_size = ParallelDescriptor::NProcs();
 	
 	Amr amr;
-	AllPrint() << "Domain: " << amr.Geom(0).Domain().size() << "\n";
+	Print() << "Domain: " << amr.Geom(0).Domain().size() << "\n";
 	amr.defBaseLevel();
-	
-	AllPrint() << "Level " << 0 << " has " << amr[0].countCells() << " cells\n"; 
+	Print() << "Level " << 0 << " has " << amr[0].countCells() << " cells\n"; 
 	// Initialize particles
 	{
 		CellFabArray& grid = amr[0].getCells();
