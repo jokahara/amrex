@@ -200,7 +200,7 @@ void AmrLevel::constructCrseFineBdry(AmrLevel* fineLevel)
     BoxArray grids_with_children(fineLevel->boxArray());
     grids_with_children.coarsen(fine_ratio);
     
-    // FINE TO THIS/COARSE BOUNDARY
+    // FINE BOUNDARY FOR COARSE/THIS LEVEL
 
     Box cdomain(Domain());
     const IntVect ngrow = state->nGrowVect();
@@ -217,7 +217,8 @@ void AmrLevel::constructCrseFineBdry(AmrLevel* fineLevel)
     crse_ba.grow(ngrow);
     BoxList crse_boxes(crse_ba);
 
-    // We will only add local boxes and set parent-child connections
+    // Add only local boxes to boundary box list
+    // and set up parent-child connections
     BoxList cb_boxes; 
 	for (MFIter it_fine(*fineLevel->state); it_fine.isValid(); ++it_fine) 
     {
@@ -243,17 +244,19 @@ void AmrLevel::constructCrseFineBdry(AmrLevel* fineLevel)
     else
     {
         BoxArray cb_ba(cb_boxes);
+        // all boxes belong to this rank
         DistributionMapping dmap { Vector<int>(cb_ba.size(), rank) };
-
+        // cells to be filled from fine level
         CellFabArray* new_coarse = new CellFabArray(cb_ba, dmap, ncomp, 0);
+        // refine to get the fine area
         cb_ba.refine(fine_ratio);
         CellFabArray* new_fine = new CellFabArray(cb_ba, dmap, ncomp, 0);
         
-        // fine boundary of this level
+        // fine boundary of this level (this also connects pointers to level data)
         fine_boundary.reset(new_coarse, this, new_fine, fineLevel, fineLevel);
     }
 
-    // THIS/COARSE TO FINE BOUNDARY
+    // COARSE BOUNDARY OF FINE LEVEL
 
     const BoxList fine_boxes(fineLevel->boxArray());
 	const DistributionMapping fine_dmap = fineLevel->DistributionMap();
@@ -288,9 +291,10 @@ void AmrLevel::constructCrseFineBdry(AmrLevel* fineLevel)
         BoxArray fb_ba(fb_boxes);
         // all boxes belong to this rank
         DistributionMapping dmap { Vector<int>(fb_ba.size(), rank) };
-
+        // cells to interpolated to from coarse data
         CellFabArray* new_fine = new CellFabArray(fb_ba, dmap, ncomp, 0);
 
+        // coarsen to get coarse area
         fb_ba.coarsen(fine_ratio);
         CellFabArray* new_coarse = new CellFabArray(fb_ba, dmap, ncomp, 0);
         

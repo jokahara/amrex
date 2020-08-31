@@ -41,7 +41,7 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
 #ifdef AMREX_USE_GPU
         if (Gpu::inLaunchRegion())
         {
-            FB_local_copy_gpu(TheFB, scomp, ncomp);
+            //FB_local_copy_gpu(TheFB, scomp, ncomp);
         }
         else
 #endif
@@ -94,7 +94,7 @@ CellFabArray::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
 #ifdef AMREX_USE_GPU
         if (Gpu::inLaunchRegion())
         {
-            FB_local_copy_gpu(TheFB, scomp, ncomp);
+            //FB_local_copy_gpu(TheFB, scomp, ncomp);
         }
         else
 #endif

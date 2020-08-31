@@ -534,13 +534,12 @@ void Amr::MakeDistributionMaps (int new_finest, Vector<BoxArray>& new_grids,
     const Box& fdomain = geom[new_finest].Domain();
     Vector<BoxList> boxes(new_finest+1);
 
+    // make BoxLists and refine them towards finest level
     boxes[0] = new_grids[0].boxList();
     for (int lev = 1; lev <= new_finest; lev++)
     {
         boxes[lev] = new_grids[lev].boxList();
-        // refine boxLists towards finest level
-        for (int i = 0; i < lev; i++)
-        {
+        for (int i = 0; i < lev; i++) {
             boxes[i].refine(refRatio(lev-1));
         }
     }
@@ -563,7 +562,7 @@ void Amr::MakeDistributionMaps (int new_finest, Vector<BoxArray>& new_grids,
         boxes[lev] = std::move(chopped);
         new_grids[lev].define(boxes[lev]);
     }
-    // new_grids[0] contains all boxes as the finer levels
+    // new_grids[0] contains all boxes
     
     // Weigh cells based on the level they belong to.
     // It is also possible to give a weight for each cell separately
@@ -600,18 +599,19 @@ void Amr::MakeDistributionMaps (int new_finest, Vector<BoxArray>& new_grids,
         BoxArray& current_ba = new_grids[lev];
         Vector<int> new_map(new_grids[lev].size(), -1);
         
-        // We can do this because boxes are sorted
+        // We can copy quickly from coarse level because boxes are sorted
         int start = previous_ba.size() - current_ba.size();
-        for (int i = 0; i < current_ba.size(); i++)
-        {
+        for (int i = 0; i < current_ba.size(); i++) {
             new_map[i] = previous_dm[start++];
         }
 
-        // coarsen back to correct refinement level
+        // define distribution map
+        new_dmap[lev].define(std::move(new_map));
+
+        // coarsen grids back to correct refinement level
         for (int i = 0; i < lev; i++) {
             new_grids[i].coarsen(ref_ratio[i]);
         }
-        new_dmap[lev].define(std::move(new_map));
     }
 }
 

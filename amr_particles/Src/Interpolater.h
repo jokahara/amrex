@@ -42,12 +42,13 @@ public:
     }
 
     // Interpolates from coarse level to fine.
+    // fine_region specifies the region to fill
     void interp (const CellFab&   crse,
                  int              crse_comp,
                  CellFab&         fine,
                  int              fine_comp,
                  int              ncomp,
-                 const Box&       fine_region,  /*the region to fill*/
+                 const Box&       fine_region,
                  const IntVect&   ratio,
                  const Geometry&  crse_geom,
                  const Geometry&  fine_geom,

@@ -8,13 +8,13 @@ amr.n_cell           =  12  12  1
 
 # Default values
 amr.n_comp           =  1     # number of components
-amr.n_grow           =  1     # number of ghost cells around fab
+amr.n_grow           =  1     # number of ghost cells around fabs
 
 # VERBOSITY
 amr.v                = 1       # verbosity in Amr
 
 # REFINEMENT
-amr.max_level        = 1       # maximum level number allowed ( >= 0 )
+amr.max_level        = 2       # maximum level number allowed ( >= 0 )
 amr.ref_ratio        = 2 2 2 2 # refinement ratio (for each level)
 amr.ref_dir          = 1 1 0   # which directions to refine (for 2D simulations)
 
@@ -24,7 +24,7 @@ amr.blocking_factor_x = 1 2 4  # each grid is divisible by blocking_factor
 amr.blocking_factor_y = 1 2 4  # should be 2^max_level or higher
 amr.blocking_factor_z = 1 1 1     
 
-amr.n_error_buf       = 0      # buffer cells around each tagged cell
+amr.n_error_buf       = 0      # buffer cells around each tagged cell, default is 1
 
 # NOT CURRENTLY USED
 # amr.regrid_int         = 2      # how often to regrid
